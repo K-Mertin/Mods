@@ -1,0 +1,8 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Starter mod: /hello command and a tool-call counter in the status line",
+  "author": {
+    "name": "K-Mertin"
+  }
+}

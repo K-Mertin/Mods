@@ -1,0 +1,14 @@
+{
+  "name": "k-mertin-mods",
+  "description": "Mods for Claude Code: panes, bands, status lines, commands and hooks",
+  "owner": {
+    "name": "K-Mertin"
+  },
+  "plugins": [
+    {
+      "name": "hello",
+      "source": "./mods/hello",
+      "description": "Starter mod: /hello command and a tool-call counter in the status line"
+    }
+  ]
+}
