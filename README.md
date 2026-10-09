@@ -62,4 +62,5 @@ After pushing to GitHub:
 | Mod | What it does |
 | --- | --- |
 | [hello](mods/hello) | `/hello [name]` command and a tool-call counter in the status line |
+| [monster](mods/monster) | Raise a pixel-art digital monster fed by your Claude Code work: tokens feed it, passing tests and commits cheer it, errors stress it, and how you work picks its evolution line (Forge, Scribe, Summoner, Wanderer). Lives in a band above the prompt; `/pet` opens its habitat with feed / play buttons |
 | [rts](mods/rts) | `/rts` opens a live pixel-art map of every session on this machine: agents, model/effort, tokens, cost, task progress, shells, who needs you, and messages. `/rts demo` shows sample data |

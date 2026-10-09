@@ -14,6 +14,11 @@
       "name": "rts",
       "source": "./mods/rts",
       "description": "A live RTS-style map of your Claude Code sessions, agents, tokens, cost and task progress"
+    },
+    {
+      "name": "monster",
+      "source": "./mods/monster",
+      "description": "Raise a digital monster that grows from your Claude Code work"
     }
   ]
 }
