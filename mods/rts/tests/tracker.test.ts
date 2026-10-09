@@ -98,3 +98,30 @@ test('merging sessions keeps each letter once', () => {
   expect(w.bases.map(b => b.name)).toEqual(['Mods', 'api'])
   expect(w.letters.map(l => l.text)).toEqual(['hi', 'yo'])
 })
+
+test('a new model step clears needs-you and waiting states', () => {
+  const t = new Tracker('s1', 'Mods', 0, '')
+  t.needsYou('a1', 'permission: Bash rm -rf dist', 1)
+  t.stepStarted('a1', 'claude-sonnet-5-5', 'high', 2)
+  expect(find(t, 'a1').activity?.kind).toBe('thinking')
+  t.toolStarted(undefined, 'Agent', { description: 'review', run_in_background: false }, 'g1', 3)
+  expect(find(t).activity?.kind).toBe('waiting-agent')
+  t.stepStarted(undefined, 'claude-opus-5-5', 'high', 4)
+  expect(find(t).activity?.kind).toBe('thinking')
+})
+
+test('a shell still running when its turn ends is marked failed', () => {
+  const t = new Tracker('s1', 'Mods', 0, '')
+  t.toolStarted('a1', 'Bash', { command: 'sleep 100' }, 'b1', 1)
+  t.turnEnded('a1', 'aborted', 5)
+  expect(find(t, 'a1').shells?.[0]).toMatchObject({ state: 'failed', endedAt: 5 })
+})
+
+test('before any tokens are counted, the main agent carries the session cost', () => {
+  const t = new Tracker('s1', 'Mods', 0, 'claude-opus-5-5')
+  t.spawned('a1', { name: 'helper', model: 'claude-haiku-5-5', at: 1 })
+  t.usd = 13
+  const units = t.snapshot(2).units
+  expect(units.find(u => u.isHero)!.usd).toBe(13)
+  expect(units.find(u => u.id === 's1:a1')!.usd).toBe(0)
+})

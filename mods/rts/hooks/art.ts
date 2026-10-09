@@ -36,16 +36,6 @@ export function sprite(rows: readonly string[], key: Key): Sprite {
   return { w, h: rows.length, px }
 }
 
-export function flip(s: Sprite): Sprite {
-  const px: (Rgb | null)[] = []
-  for (let y = 0; y < s.h; y++) for (let x = s.w - 1; x >= 0; x--) px.push(s.px[y * s.w + x] ?? null)
-  return { w: s.w, h: s.h, px }
-}
-
-export function solid(s: Sprite, color: Rgb): Sprite {
-  return { w: s.w, h: s.h, px: s.px.map(c => (c === null ? null : color)) }
-}
-
 // ── Knight (agent), facing right. A/B: armour light/mid/dark, P/p: plume, T/t: team tabard.
 const KNIGHT_READY = [
   '......PP........',

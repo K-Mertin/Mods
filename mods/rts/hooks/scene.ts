@@ -2,7 +2,7 @@
 // Both renderers (SVG for the desktop, cells for the terminal) draw the same list.
 
 import {
-  C, TEAMS, alert, flip, fire, hourglass, question, shellBackground, shellRunning, thought, flower, goblin, grave, knight, letter, pine, rock, tent, tree, tuft, victoryFlag,
+  C, TEAMS, alert, fire, hourglass, question, shellBackground, shellRunning, thought, flower, goblin, grave, knight, letter, pine, rock, tent, tree, tuft, victoryFlag,
   type Armour, type Rgb, type Sprite,
 } from './art'
 import type { Base, Unit, World } from './model'
@@ -261,7 +261,7 @@ export function layout(world: World, width: number): Scene {
       const cx = campArea.x + (i % perRow) * CAMP_W
       const cy = y0 + 4 + Math.floor(i / perRow) * CAMP_H
       taken.push({ x: cx - 18, y: cy - 4, w: CAMP_W + 4, h: CAMP_H })
-      camp(items, spots, u, cx, cy, team, roadY, gate, bi)
+      camp(items, spots, u, cx, cy, team, roadY, bi)
     })
     resting.forEach((u, i) => {
       const x = hq.x + HQ_W + 6 + (i % 3) * 18
@@ -356,7 +356,7 @@ function shells(items: Drawable[], u: Unit, x: number, y: number) {
   }
 }
 
-function camp(items: Drawable[], spots: Record<string, Pt>, u: Unit, cx: number, cy: number, team: readonly [Rgb, Rgb], roadY: number, _gate: Pt, bi: number) {
+function camp(items: Drawable[], spots: Record<string, Pt>, u: Unit, cx: number, cy: number, team: readonly [Rgb, Rgb], roadY: number, bi: number) {
   const left = Math.max(0, u.total - u.done)
   const z = 30 + cy / 1000
   // Trampled ground, and a track down to the road.
@@ -424,10 +424,8 @@ function reserve(items: Drawable[], spots: Record<string, Pt>, u: Unit, x: numbe
   spots[u.id] = [x + 8, y + 6]
   if (u.status === 'running') {
     // No work list: patrol the road to the bridge and back.
-    const back = flip(k.walk)
     const pts: Pt[] = [[gate[0] + 4, roadY - 14], [bridgeEnd, roadY - 14], [gate[0] + 4, roadY - 14]]
     items.push({ kind: 'sprite', sprite: k.walk, x: pts[0]![0], y: pts[0]![1], z: 48, unit: u.id, anim: { path: { pts, ms: 9000 }, frames: [k.walk, k.ready], frameMs: 220 } })
-    void back
     spots[u.id] = [x + 8, y + 6]
   } else {
     const s = u.status === 'failed' ? fallen(k.ready) : k.ready

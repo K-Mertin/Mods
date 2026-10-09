@@ -6,6 +6,7 @@ import type { Activity, Base, Effort, Letter, Shell, Unit, UnitStatus, World } f
 const MAX_LETTERS = 20
 const MAX_SHELLS = 6
 const MAX_UNITS = 16
+const BACKGROUND_TTL_MS = 30 * 60 * 1000
 
 export type Usage = {
   input_tokens: number
@@ -110,6 +111,12 @@ export class Tracker {
   turnEnded(agentId: string | undefined, reason: string, at: number) {
     const u = this.unit(agentId)
     u.activity = undefined
+    for (const sh of u.shells ?? []) {
+      if (sh.state === 'running') {
+        sh.state = 'failed'
+        sh.endedAt = at
+      }
+    }
     if (!agentId) u.status = 'idle'
     else {
       u.status = reason === 'error' || reason === 'refusal' ? 'failed' : 'done'
@@ -124,7 +131,8 @@ export class Tracker {
     const u = this.unit(agentId)
     u.model = model || u.model
     u.effort = effortOf(effort) ?? u.effort
-    if (u.activity?.kind !== 'needs-you' && u.activity?.kind !== 'waiting-agent') u.activity = { kind: 'thinking', since: at }
+    // A model step means the agent is not blocked on you or on another agent any more.
+    if (u.activity?.kind !== 'thinking') u.activity = { kind: 'thinking', since: at }
     u.status = 'running'
     this.touch()
   }
@@ -201,7 +209,7 @@ export class Tracker {
       }
       this.recount()
     }
-    if (u.activity && (u.activity.kind !== 'waiting-agent' || tool === 'Agent')) u.activity = undefined
+    u.activity = undefined
     this.touch()
   }
 
@@ -274,9 +282,19 @@ export class Tracker {
       const drop = new Set(finished.slice(0, units.length - MAX_UNITS).map(u => u.id))
       units = units.filter(u => !drop.has(u.id))
     }
+    // Before any tokens are counted, the main agent carries the whole cost.
     const weights = units.map(u => this.cost.get(u.id) ?? 0)
     const sum = weights.reduce((a, b) => a + b, 0)
-    units.forEach((u, i) => (u.usd = sum ? (this.usd * weights[i]!) / sum : 0))
+    units.forEach((u, i) => (u.usd = sum ? (this.usd * weights[i]!) / sum : u.isHero ? this.usd : 0))
+    // A background shell is never reported finished; let it go after a while.
+    for (const u of units) {
+      for (const sh of u.shells ?? []) {
+        if (sh.state === 'background' && now - sh.startedAt > BACKGROUND_TTL_MS) {
+          sh.state = 'ok'
+          sh.endedAt = now
+        }
+      }
+    }
     this.base.units = units.map(u => ({ ...u, shells: u.shells?.map(s => ({ ...s })), activity: u.activity && { ...u.activity } as Activity }))
     this.base.tokens = units.reduce((n, u) => n + u.tokens, 0)
     this.base.usd = this.usd

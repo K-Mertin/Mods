@@ -134,16 +134,23 @@ async function tick($: EngineInterface) {
 // The desktop map is rebuilt only when what it draws changes (or its labels are stale),
 // so its animations keep running between token updates.
 const LABEL_REFRESH_MS = 15000
+const MIN_REBUILD_MS = 4000
+let lastNeeds = ''
 let lastSvg = ''
 let lastSig = ''
 let lastSvgAt = 0
 
 function signature(w: World) {
   const recent = w.letters.filter(l => w.now - l.at < 12000).map(l => l.id)
+  const blocked = (u: Unit) => (u.activity?.kind === 'needs-you' || u.activity?.kind === 'waiting-agent' ? u.activity.kind : '')
   return JSON.stringify([
-    w.bases.map(b => [b.id, b.name, b.units.map(u => [u.id, u.name, u.model, u.effort, u.status, u.done, u.total, u.activity?.kind, u.activity?.detail?.slice(0, 8), (u.shells ?? []).filter(x => x.state === 'running' || x.state === 'background').map(x => x.id)])]),
+    w.bases.map(b => [b.id, b.name, b.units.map(u => [u.id, u.name, u.model, u.effort, u.status, u.done, u.total, blocked(u), (u.shells ?? []).filter(x => x.state === 'running' || x.state === 'background').map(x => x.id)])]),
     recent,
   ])
+}
+
+function needsYouIds(w: World) {
+  return w.bases.flatMap(b => b.units.filter(u => u.activity?.kind === 'needs-you').map(u => u.id)).join()
 }
 
 async function shown($: EngineInterface): Promise<World> {
@@ -206,10 +213,14 @@ export const register: Register = on => {
     const id = e.tool_use_id ?? `${Date.now()}`
     const tool = String(e.tool)
     tracker?.toolStarted(e.agentId, tool, input, id, Date.now())
-    const r = await next(e)
-    const result = 'result' in r ? r.result : undefined
-    tracker?.toolEnded(e.agentId, tool, input, id, result, r.isError === true || r.deny !== undefined, Date.now())
-    return r
+    let r: Awaited<ReturnType<typeof next>> | undefined
+    try {
+      r = await next(e)
+      return r
+    } finally {
+      const result = r && 'result' in r ? r.result : undefined
+      tracker?.toolEnded(e.agentId, tool, input, id, result, !r || r.isError === true || r.deny !== undefined, Date.now())
+    }
   }).catch(($, e, next) => next(e))
 
   on('classic.PermissionRequest', ($, e, next) => {
@@ -335,10 +346,15 @@ export const register: Register = on => {
       const k = px / mapW
       const sig = `${mapW}|${signature(w)}`
       const now = Date.now()
-      if (sig !== lastSig || now - lastSvgAt > LABEL_REFRESH_MS || !lastSvg) {
+      const needsNow = needsYouIds(w)
+      const urgent = needsNow !== lastNeeds && needsNow.length > lastNeeds.length
+      const stale = now - lastSvgAt > LABEL_REFRESH_MS
+      const changed = sig !== lastSig && now - lastSvgAt > MIN_REBUILD_MS
+      if (!lastSvg || urgent || stale || changed) {
         lastSvg = toSvg(s, { minimap: true })
         lastSig = sig
         lastSvgAt = now
+        lastNeeds = needsNow
       }
       return (
         <Box flexDirection="column" gap={1}>
@@ -349,7 +365,6 @@ export const register: Register = on => {
             alt={`Map: ${t.sessions} sessions, ${t.units} agents, ${tasksLeft} tasks left`}
             width={px}
             height={Math.round(s.h * k)}
-            isInteractive
           />
           {info}
           {roster}

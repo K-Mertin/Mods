@@ -6,8 +6,6 @@ import type { Anim, Drawable, Pt, Scene } from './scene'
 
 export type Frame = { columns: number; rows: number; cells: string }
 
-const DEFAULT = 0x01000000
-
 function grass(x: number, y: number): Rgb {
   const n = (x * 7 + y * 13 + ((x * y) % 5)) % 23
   return n === 0 ? C.grassLight : n === 7 ? C.grassDark : C.grass
@@ -142,6 +140,5 @@ export function toCells(scene: Scene, t: number): Frame {
       words[n + 2] = shade(px[2 * r * W + x]!, 0.55)
     }
   }
-  void DEFAULT
   return { columns: W, rows, cells: base64(new Uint8Array(words.buffer)) }
 }
