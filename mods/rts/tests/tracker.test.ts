@@ -82,7 +82,8 @@ test('the session cost is split between agents and adds up', () => {
   const t = new Tracker('s1', 'Mods', 0, 'claude-opus-5-5')
   t.stepEnded(undefined, usage(1000), 'claude-opus-5-5')
   t.stepEnded('a1', usage(1000), 'claude-haiku-5-5')
-  t.usd = 6
+  t.setCost(4)
+  t.setCost(10)
   const units = t.snapshot(5).units
   const sum = units.reduce((n, u) => n + u.usd, 0)
   expect(Math.round(sum * 100)).toBe(600)
@@ -120,8 +121,36 @@ test('a shell still running when its turn ends is marked failed', () => {
 test('before any tokens are counted, the main agent carries the session cost', () => {
   const t = new Tracker('s1', 'Mods', 0, 'claude-opus-5-5')
   t.spawned('a1', { name: 'helper', model: 'claude-haiku-5-5', at: 1 })
-  t.usd = 13
+  t.setCost(20)
+  t.setCost(33)
   const units = t.snapshot(2).units
   expect(units.find(u => u.isHero)!.usd).toBe(13)
   expect(units.find(u => u.id === 's1:a1')!.usd).toBe(0)
+})
+
+test('a tracker saved and restored keeps its agents, cost weights and messages', () => {
+  const t = new Tracker('s1', 'Mods', 0, 'claude-opus-5-5')
+  t.spawned('a1', { name: 'helper', model: 'claude-haiku-5-5', at: 1 })
+  t.stepEnded('a1', usage(500), 'claude-haiku-5-5')
+  t.setCost(1)
+  t.setCost(3)
+  const back = Tracker.restore(JSON.parse(JSON.stringify(t.save())))
+  const units = back.snapshot(3).units
+  expect(units.map(u => u.name).sort()).toEqual(['helper', 'main'])
+  expect(units.find(u => u.id === 's1:a1')!.tokens).toBe(500)
+  expect(back.letters.length).toBe(1)
+  expect(back.snapshot(4).usd).toBe(2)
+  back.sent(undefined, 'helper', 'next', 4)
+  expect(new Set(back.letters.map(l => l.id)).size).toBe(2)
+})
+
+test('the cost shown is what was spent since tracking began; the session total is kept beside it', () => {
+  const t = new Tracker('s1', 'Mods', 0, 'claude-opus-5-5')
+  t.setCost(14.5)
+  t.stepEnded(undefined, { input_tokens: 10, output_tokens: 500, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2_000 })
+  t.setCost(14.9)
+  const b = t.snapshot(1)
+  expect(Math.round(b.usd * 100)).toBe(40)
+  expect(b.usdTotal).toBe(14.9)
+  expect(b.tokens).toBe(92_510)
 })

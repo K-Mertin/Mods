@@ -48,8 +48,12 @@ export type Unit = {
 export type Base = {
   id: string
   name: string
+  /** Tokens processed since tracking began: input, output, cache writes and cache reads. */
   tokens: number
+  /** Cost since tracking began. */
   usd: number
+  /** The session's whole cost, from its start. */
+  usdTotal?: number
   updatedAt: number
   units: Unit[]
 }
@@ -69,9 +73,25 @@ export type World = {
   now: number
 }
 
+/** The tracker's bookkeeping, kept across reloads of the mod. */
+export type TrackerState = {
+  sid: string
+  base: Base
+  letters: Letter[]
+  units: Unit[]
+  cost: [string, number][]
+  tasks: [string, { subject: string; status: string; agent: string }][]
+  todoAgents: string[]
+  parents: [string, string][]
+  seq: number
+  usd: number
+  usdBase?: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     rts: {
+      tracker: TrackerState | null
       world: World
       selected: string | null
       isDemo: boolean

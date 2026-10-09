@@ -2,6 +2,9 @@
 // Pure bookkeeping, fed by the hooks in register.tsx; no `$` here.
 
 import type { Activity, Base, Effort, Letter, Shell, Unit, UnitStatus, World } from './model'
+import type { TrackerState } from '../types'
+
+export type { TrackerState }
 
 const MAX_LETTERS = 20
 const MAX_SHELLS = 6
@@ -43,7 +46,10 @@ export class Tracker {
   private todoAgents = new Set<string>()
   private parents = new Map<string, string>()
   private seq = 0
+  /** The session's whole cost, as last read. */
   usd = 0
+  /** The cost when tracking began: what is shown is the cost since. */
+  usdBase: number | undefined
   dirty = true
 
   constructor(readonly sid: string, name: string, now: number, model: string) {
@@ -51,6 +57,50 @@ export class Tracker {
     this.units.set(this.key(), {
       id: this.key(), name: 'main', model, status: 'idle', isHero: true, tokens: 0, usd: 0, done: 0, total: 0,
     })
+  }
+
+  save(): TrackerState {
+    return {
+      sid: this.sid,
+      base: this.base,
+      letters: this.letters,
+      units: [...this.units.values()],
+      cost: [...this.cost],
+      tasks: [...this.tasks],
+      todoAgents: [...this.todoAgents],
+      parents: [...this.parents],
+      seq: this.seq,
+      usd: this.usd,
+      usdBase: this.usdBase,
+    }
+  }
+
+  /** Records the session's whole cost; the first reading is the baseline. */
+  setCost(total: number) {
+    this.usdBase ??= total
+    if (total !== this.usd) {
+      this.usd = total
+      this.dirty = true
+    }
+  }
+
+  get tracked() {
+    return Math.max(0, this.usd - (this.usdBase ?? this.usd))
+  }
+
+  static restore(s: TrackerState): Tracker {
+    const t = new Tracker(s.sid, s.base.name, s.base.updatedAt, '')
+    t.units = new Map(s.units.map(u => [u.id, u]))
+    t.cost = new Map(s.cost)
+    t.tasks = new Map(s.tasks)
+    t.todoAgents = new Set(s.todoAgents)
+    t.parents = new Map(s.parents)
+    t.letters = s.letters
+    t.seq = s.seq
+    t.usd = s.usd
+    t.usdBase = s.usdBase
+    t.dirty = true
+    return t
   }
 
   /** The unit id for an agent of this session; the main loop when absent. */
@@ -140,10 +190,11 @@ export class Tracker {
   stepEnded(agentId: string | undefined, usage: Usage | null, model?: string) {
     if (!usage) return
     const u = this.unit(agentId)
-    const fresh = usage.input_tokens + usage.output_tokens + usage.cache_creation_input_tokens
-    u.tokens += fresh
+    // Every token the call processed; cache reads are cheap, so they weigh a tenth in the cost split.
+    u.tokens += usage.input_tokens + usage.output_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
     const w = weight(model || u.model)
-    this.cost.set(u.id, (this.cost.get(u.id) ?? 0) + w * (fresh + usage.cache_read_input_tokens * 0.1))
+    const billed = usage.input_tokens + usage.cache_creation_input_tokens * 1.25 + usage.output_tokens * 5 + usage.cache_read_input_tokens * 0.1
+    this.cost.set(u.id, (this.cost.get(u.id) ?? 0) + w * billed)
     this.touch()
   }
 
@@ -285,7 +336,8 @@ export class Tracker {
     // Before any tokens are counted, the main agent carries the whole cost.
     const weights = units.map(u => this.cost.get(u.id) ?? 0)
     const sum = weights.reduce((a, b) => a + b, 0)
-    units.forEach((u, i) => (u.usd = sum ? (this.usd * weights[i]!) / sum : u.isHero ? this.usd : 0))
+    const spent = this.tracked
+    units.forEach((u, i) => (u.usd = sum ? (spent * weights[i]!) / sum : u.isHero ? spent : 0))
     // A background shell is never reported finished; let it go after a while.
     for (const u of units) {
       for (const sh of u.shells ?? []) {
@@ -297,7 +349,8 @@ export class Tracker {
     }
     this.base.units = units.map(u => ({ ...u, shells: u.shells?.map(s => ({ ...s })), activity: u.activity && { ...u.activity } as Activity }))
     this.base.tokens = units.reduce((n, u) => n + u.tokens, 0)
-    this.base.usd = this.usd
+    this.base.usd = spent
+    this.base.usdTotal = this.usd
     this.base.updatedAt = now
     return { ...this.base }
   }

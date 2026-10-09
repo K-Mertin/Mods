@@ -23,6 +23,7 @@ const STALE_MS = 20000
 const world = atom({ plugin: 'rts', key: 'world' } as const, EMPTY)
 const selected = atom({ plugin: 'rts', key: 'selected' } as const, null)
 const isDemo = atom({ plugin: 'rts', key: 'isDemo' } as const, false)
+const saved = atom({ plugin: 'rts', key: 'tracker' } as const, null)
 
 function kfmt(n: number) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`
@@ -85,11 +86,7 @@ async function tick($: EngineInterface) {
   const now = await $.clock.now()
   try {
     const usage = await $.session.usage()
-    const usd = usage.cost?.usd ?? 0
-    if (usd !== t.usd) {
-      t.usd = usd
-      t.dirty = true
-    }
+    t.setCost(usage.cost?.usd ?? 0)
   } catch {}
   try {
     for (const a of await $.agent.list()) {
@@ -125,6 +122,7 @@ async function tick($: EngineInterface) {
       }
     } catch {}
   }
+  if (t.dirty) await update($, saved, () => t.save())
   if (t.dirty || othersChanged) {
     t.dirty = false
     await update($, world, () => merge(own, t.letters, others, now))
@@ -168,7 +166,9 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     const [sid, root, model, home] = await Promise.all([$.session.id(), $.session.root(), $.session.model(), $.env.get('HOME')])
-    tracker = new Tracker(sid, root.split('/').filter(Boolean).pop() ?? root, await $.clock.now(), model)
+    // A reload of the mod keeps this session's history: pick up where the last load left off.
+    const kept = await read($, saved)
+    tracker = kept && kept.sid === sid ? Tracker.restore(kept) : new Tracker(sid, root.split('/').filter(Boolean).pop() ?? root, await $.clock.now(), model)
     dir = home ? `${home}/.claude/rts` : ''
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => void tick($))
@@ -256,6 +256,7 @@ export const register: Register = on => {
     const w = await shown($)
     const sel = await read($, selected)
     const t = totals(w)
+    const lifetime = w.bases.reduce((n, b) => n + (b.usdTotal ?? b.usd), 0)
     const units = w.bases.flatMap(b => b.units)
     const running = units.filter(u => u.status === 'running').length
     const waiting = units.filter(u => u.status === 'waiting').length
@@ -268,7 +269,8 @@ export const register: Register = on => {
       <Box flexDirection="row" gap={2}>
         <Text color="#FFCD75" bold>{t.sessions} sessions</Text>
         <Text color="#73EFF7">{kfmt(t.tokens)} tokens</Text>
-        <Text color="#FFCD75">${t.usd.toFixed(2)}</Text>
+        <Text color="#FFCD75">${t.usd.toFixed(2)} since tracking</Text>
+        {lifetime > t.usd + 0.005 && <Text color="#94B0C2">${lifetime.toFixed(2)} session total</Text>}
         <Text color="#A7F070">{t.units} agents · {running} running · {waiting} waiting</Text>
         {needsCount > 0 && <Text color="#FFCD75" bold>! {needsCount} need you</Text>}
         <Text color="#EF7D57">{t.done}/{t.total} tasks done · {tasksLeft} left</Text>
