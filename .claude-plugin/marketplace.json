@@ -9,6 +9,11 @@
       "name": "hello",
       "source": "./mods/hello",
       "description": "Starter mod: /hello command and a tool-call counter in the status line"
+    },
+    {
+      "name": "rts",
+      "source": "./mods/rts",
+      "description": "A live RTS-style map of your Claude Code sessions, agents, tokens, cost and task progress"
     }
   ]
 }

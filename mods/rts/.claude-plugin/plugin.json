@@ -1,0 +1,9 @@
+{
+  "name": "rts",
+  "version": "0.1.0",
+  "description": "A live RTS-style map of your Claude Code sessions, agents, tokens, cost and task progress",
+  "author": {
+    "name": "K-Mertin"
+  },
+  "types": "./types/index.d.ts"
+}
