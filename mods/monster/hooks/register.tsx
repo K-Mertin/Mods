@@ -687,15 +687,15 @@ export const register: Register = on => {
             <Text color="#FFCD75" bold>Hats</Text>
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               <Button key="hat-none" label="No hat" variant={p.hat === null ? 'primary' : 'secondary'} onPress={() => act($, { kind: 'equip', hat: null, at: Date.now() })} />
-              {p.hats.map(h => (
-                <Button key={`hat-${h}`} label={HATS[h]} variant={p.hat === h ? 'primary' : 'secondary'} onPress={() => act($, { kind: 'equip', hat: h, at: Date.now() })} />
+              {p.hats.map(hat => (
+                <Button key={`hat-${hat}`} label={HATS[hat]} variant={p.hat === hat ? 'primary' : 'secondary'} onPress={() => act($, { kind: 'equip', hat, at: Date.now() })} />
               ))}
             </Box>
             {(Object.keys(HATS) as Hat[])
-              .filter(h => !p.hats.includes(h))
-              .map(h => {
-                const b = BADGES.find(x => x.hat === h)
-                return <Text key={`locked-${h}`} dimColor>🔒 {HATS[h]}: {b ? b.what.toLowerCase() : 'secret'}</Text>
+              .filter(hat => !p.hats.includes(hat))
+              .map(hat => {
+                const b = BADGES.find(x => x.hat === hat)
+                return <Text key={`locked-${hat}`} dimColor>🔒 {HATS[hat]}: {b ? b.what.toLowerCase() : 'secret'}</Text>
               })}
           </Box>
         )
@@ -736,7 +736,7 @@ export const register: Register = on => {
             }} />
             {p.mess > 0 && <Button key="clean" label={`Clean (${p.mess})`} hotkey="c" onPress={() => act($, { kind: 'clean', at: Date.now() })} />}
             <Button key="tuck" label={tucked ? 'Sleeping…' : 'Tuck in'} hotkey="z" onPress={() => act($, { kind: 'tuck', at: Date.now() })} />
-            <Button key="band" label={(await read($, hiddenAtom)) ? 'Show band' : 'Hide band'} onPress={() => update($, hiddenAtom, h => !h)} />
+            <Button key="band" label={(await read($, hiddenAtom)) ? 'Show band' : 'Hide band'} onPress={() => update($, hiddenAtom, hidden => !hidden)} />
             <Button key="sound" label={p.settings.sound ? 'Sound: on' : 'Sound: off'} onPress={() => act($, { kind: 'setting', key: 'sound', on: !p.settings.sound, at: Date.now() })} />
             <Button key="alerts" label={p.settings.alerts ? 'Alerts: on' : 'Alerts: off'} onPress={() => act($, { kind: 'setting', key: 'alerts', on: !p.settings.alerts, at: Date.now() })} />
           </Box>
