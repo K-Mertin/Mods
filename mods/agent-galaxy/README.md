@@ -33,10 +33,17 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 - An item is a small planet: it grows and gains moons the more it is used. Context items the agent has not opened are dimmed.
 - The session menu switches sessions; **All sessions** (or Esc) shows every recent session as its own galaxy.
 - Click an item for its full text.
+- **Replay** steps through the session on screen from its start, with a timeline you can scrub and a speed control. **Save as page** downloads that replay as one HTML file that plays on its own, with no server.
 - A step that failed or was declined turns its planet red, and the pulse that reports it is red too.
 - The agent's to-do list is a segmented arc around the core: bright for done, pulsing for in progress, faint for still to do, with the current task named underneath.
 - A gauge above the core shows how full the agent's context is (it turns red past 80%) and the output tokens so far. The limit is assumed to be 200K, or 1M once use passes 200K.
 - The core shows the session's state: amber while the agent works, blue with **YOUR TURN** when it has finished and is waiting for you, dim with **QUIET** after a minute without activity.
+
+## Sharing a saved replay
+
+A saved page contains what the galaxy showed: prompts, commands, file names, the agent's replies, and key ideas from `CLAUDE.md`, memory and rule files. Home folders are rewritten to `~`, so your user name is not in the paths, but nothing else is removed. Read it before you share it.
+
+A replay covers the last 300 changes of a session, read from the end of its transcript.
 
 ## What it reads
 

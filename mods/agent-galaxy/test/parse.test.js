@@ -105,3 +105,32 @@ test('key ideas come from bullets, or sentences when there are none', () => {
   assert.deepEqual(G.keyIdeas(b, 6).map(i => i.short), ['Prefer small diffs', 'Ask before deleting anything at all']);
   fs.rmSync(dir, { recursive: true });
 });
+
+test('replay: one frame per change, in order, ending at the live state', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-galaxy-'));
+  const file = path.join(dir, 's.jsonl');
+  fs.writeFileSync(file, [
+    user('Ship it', { cwd: '/tmp/demo-api', timestamp: '2026-01-02T03:04:05Z' }),
+    line({ type: 'summary', summary: 'ignored' }),
+    asst([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test', description: 'Run the tests' } }], {}, { timestamp: '2026-01-02T03:04:09Z' }),
+    user([{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'failed' }], { timestamp: '2026-01-02T03:04:20Z' })
+  ].join('\n') + '\n');
+  const r = G.buildReplay(file);
+  assert.equal(r.frames.length, 3);
+  assert.equal(r.frames[0].state.core, 'Ship it');
+  assert.equal(r.frames[0].t, Date.parse('2026-01-02T03:04:05Z'));
+  assert.equal(ring(r.frames[1].state, 'Actions').length, 1);
+  assert.ok(r.frames[2].pulses.some(p => p.error));
+  assert.equal(ring(r.frames[2].state, 'Actions')[0].error, true);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('export: home folders are replaced and the page carries the recording safely', () => {
+  const data = { id: 's', project: 'p', frames: [{ t: 0, state: { core: 'see ' + os.homedir() + '/secret and /Users/alice/x and /home/bob/y </script>' }, pulses: [] }] };
+  const json = G.redact(JSON.stringify(data));
+  assert.ok(!json.includes(os.homedir()) && !json.includes('alice') && !json.includes('bob'));
+  assert.ok(json.includes('~/secret') && json.includes('~/x') && json.includes('~/y'));
+  const html = G.exportPage(data);
+  assert.ok(html.includes('window.__REPLAY__ = {'));
+  assert.equal(html.split('</script>').length, 3);   // the recording and the page script, nothing broken out early
+});

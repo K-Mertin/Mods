@@ -341,6 +341,40 @@ function scan() {
   if (changed) send(full());
 }
 
+/* ---------- replay ---------- */
+// Re-reads a transcript from the start and records the galaxy after every line that changed it.
+function buildReplay(file, max) {
+  const S = makeSession(file, 0), frames = [];
+  let text = '';
+  try {
+    const size = fs.statSync(file).size, from = Math.max(0, size - 2 * TAIL_BYTES);
+    let buf = readRange(file, from, size);
+    if (from > 0) buf = buf.subarray(buf.indexOf(10) + 1);
+    text = buf.toString('utf8');
+  } catch (e) {}
+  for (const ln of text.split('\n')) {
+    if (!ln.trim()) continue;
+    let o; try { o = JSON.parse(ln); } catch (e) { continue; }
+    handle(S, o, true);
+    if (S.cwdChanged) { scanContext(S); S.cwdChanged = false; }
+    if (!S.dirty) continue;
+    const t = Date.parse(o && o.timestamp) || 0;
+    if (t) S.mtime = t;
+    frames.push({ t, state: snapshot(S), pulses: S.pending });
+    S.pending = []; S.dirty = false;
+  }
+  return { id: S.id, project: S.project, frames: frames.slice(-(max || 300)) };
+}
+// For a page that will be shared: home folders become "~" so user names and machine paths are not published.
+function redact(json) {
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), home = JSON.stringify(os.homedir()).slice(1, -1);
+  return json.replace(new RegExp(esc(home), 'g'), '~').replace(/(?:\/(?:Users|home)\/|[A-Za-z]:\\\\Users\\\\)[^\/\\"\s]+/g, '~');
+}
+function exportPage(data) {
+  const json = redact(JSON.stringify(data)).replace(/</g, '\\u003c');
+  return PAGE.replace('<script>', () => '<script>window.__REPLAY__ = ' + json + ';</script>\n<script>');
+}
+
 /* ---------- server ---------- */
 function start() {
   const server = http.createServer((req, res) => {
@@ -351,7 +385,16 @@ function start() {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write('data: ' + JSON.stringify(full()) + '\n\n');
       clients.add(res); req.on('close', () => clients.delete(res));
-    } else { res.writeHead(404); res.end('Not found'); }
+    } else if (url === '/replay' || url === '/export') {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id');
+    const S = [...tracked.values()].find(x => x.id === id);
+    if (!S) { res.writeHead(404); return res.end('Unknown session'); }
+    const data = buildReplay(S.file);
+    if (url === '/replay') { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(data)); }
+    const name = 'agent-galaxy-' + String(data.project || 'session').replace(/[^A-Za-z0-9._-]+/g, '-') + '.html';
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
+    res.end(exportPage(data));
+  } else { res.writeHead(404); res.end('Not found'); }
   });
   server.on('error', e => {
     console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is in use. Try: node ${path.basename(process.argv[1])} --port ${PORT + 1}` : e.message);
@@ -375,4 +418,4 @@ function start() {
 
 // Run as a script, or load it from a test to use the parser on its own.
 if (require.main === module) start();
-else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
+else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };

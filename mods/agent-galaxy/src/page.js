@@ -185,7 +185,7 @@
       halo: glowSprite([170, 140, 110], 256, false), warm: glowSprite([200, 180, 150], 128, true), rays: raySprite([196, 176, 150], [150, 120, 100]) }
   };
   function stateOf(g) {
-    if (!live) return g.status || 'working';
+    if (!live || g.replaying) return g.status || 'working';
     const idle = Date.now() - (g.mtime || Date.now());
     if (g.status === 'waiting') return idle > 2500 ? 'waiting' : 'working';   // a reply is often followed at once by a tool call
     return idle > 60000 ? 'quiet' : 'working';
@@ -722,6 +722,7 @@
     const name = view === 'all' && galaxies.length > 1 ? `${galaxies.length} sessions` : focus ? (focus.project || 'session') : 'no session';
     sessBtn.textContent = (live ? 'live · ' : '') + name + ' ▾';
     allBtn.hidden = galaxies.length < 2;
+    $('replayBtn').hidden = !live || !!replay || !focus || focus.id === '__none';
     allBtn.setAttribute('aria-pressed', String(view === 'all'));
     $('hint').textContent = view === 'all' ? 'click a galaxy to fly in · drag to turn · scroll to zoom' : 'drag to turn · scroll to zoom · click a word';
   }
@@ -747,6 +748,7 @@
   allBtn.addEventListener('click', () => { closeMenu(); setView(view === 'all' ? 'single' : 'all'); });
   window.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
+    if (replay && !replay.embedded) return stopReplay();
     if (!menu.hidden) closeMenu(); else if (!editor.hidden) closeEditor(); else if (view === 'single') setView('all');
   });
 
@@ -771,7 +773,7 @@
     coreKick = Math.max(0, coreKick - dt * 1.6);
     for (const r of rings) r.heat = Math.max(0, r.heat - dt * 0.6);
 
-    if (!live && speed > 0 && !pulses.length && G.state !== 'waiting') {   // example mode: attention wanders at random
+    if (!live && !G.replaying && speed > 0 && !pulses.length && G.state !== 'waiting') {   // example mode: attention wanders at random
       G.demoTimer -= dt;
       if (G.demoTimer <= 0) {
         const pool = words.filter(w => rings[w.ring].visible && !w.dying);
@@ -837,6 +839,7 @@
     for (let i = 0; i < 3; i++) camT[i] += (tgt[i] - camT[i]) * k;
     camD += (tD - camD) * k;
 
+    stepReplay(dt);
     for (const g of galaxies) prepare(g);
     for (const g of galaxies) { use(g); step(dt); save(); }
 
@@ -958,7 +961,56 @@
   });
 
   /* ---------- live feed ---------- */
-  let wantAll = location.hash === '#all', build = '';
+  let wantAll = location.hash === '#all', build = '', es = null;
+
+  /* ---------- replay: step through a session from its start ---------- */
+  let replay = null;   // { g, frames, i, playing, speed, acc, embedded }
+  const rp = { bar: $('replayBar'), play: $('rpPlay'), seek: $('rpSeek'), label: $('rpLabel'), speed: $('rpSpeed'), save: $('rpSave'), close: $('rpClose') };
+  function showFrame(i, withPulses) {
+    const f = replay.frames[i]; replay.i = i;
+    applyState(replay.g, f.state, false);
+    if (withPulses) (f.pulses || []).forEach(p => firePulse(replay.g, p.ring, p.key, p.error));
+    rp.seek.value = String(i);
+    rp.label.textContent = (f.t ? new Date(f.t).toLocaleTimeString() + ' · ' : '') + `${i + 1} / ${replay.frames.length}`;
+  }
+  function setPlaying(on) { replay.playing = on; replay.acc = 0; rp.play.textContent = on ? 'Pause' : 'Play'; }
+  function startReplay(data, g, embedded) {
+    if (!data || !data.frames || !data.frames.length) { statusText('nothing to replay in this session yet'); return; }
+    g.replaying = true;
+    replay = { g, frames: data.frames, i: 0, playing: true, speed: 1, acc: 0, embedded };
+    rp.seek.max = String(data.frames.length - 1); rp.speed.textContent = '1×';
+    rp.close.hidden = embedded; rp.save.hidden = embedded || !live;
+    if (!embedded) rp.save.href = '/export?id=' + encodeURIComponent(data.id);
+    rp.bar.hidden = false; document.body.classList.add('replaying');
+    selected = null; showDetail();
+    showFrame(0, false); setPlaying(true); updateButtons();
+    statusText('replaying ', g.project || 'session');
+  }
+  function stopReplay() {
+    if (!replay) return;
+    replay.g.replaying = false; replay = null;
+    rp.bar.hidden = true; document.body.classList.remove('replaying');
+    if (live) { if (es) es.close(); connect(); }   // reconnect to get the live state back
+  }
+  function stepReplay(dt) {
+    if (!replay || !replay.playing) return;
+    replay.acc += dt * replay.speed;
+    const last = replay.i >= replay.frames.length - 1;
+    if (last) { if (!replay.embedded) return setPlaying(false); if (replay.acc > 4) { replay.acc = 0; showFrame(0, false); } return; }
+    if (replay.acc >= 0.7) { replay.acc = 0; showFrame(replay.i + 1, true); }
+  }
+  rp.play.addEventListener('click', () => { if (!replay) return; if (!replay.playing && replay.i >= replay.frames.length - 1) showFrame(0, false); setPlaying(!replay.playing); });
+  rp.seek.addEventListener('input', () => { if (!replay) return; setPlaying(false); showFrame(Number(rp.seek.value), false); });
+  rp.speed.addEventListener('click', () => { if (!replay) return; replay.speed = replay.speed >= 8 ? 1 : replay.speed * 2; rp.speed.textContent = replay.speed + '×'; });
+  rp.close.addEventListener('click', stopReplay);
+  $('replayBtn').addEventListener('click', () => {
+    if (!focus || replay) return;
+    const g = focus; closeMenu(); statusText('loading the session from its start');
+    fetch('/replay?id=' + encodeURIComponent(g.id)).then(r => r.ok ? r.json() : Promise.reject(new Error('not found')))
+      .then(data => { if (focus === g && !replay) startReplay(data, g, false); })
+      .catch(() => statusText('could not load the replay for this session'));
+  });
+
   const EMPTY_RINGS = ['Tools', 'Files', 'Actions', 'Thoughts', 'Context'].map(name => ({ name, items: [] }));
   function placeholder(text) {
     galaxies = []; selected = null; hover = null; hoverG = null; showDetail();
@@ -969,14 +1021,14 @@
   function reconcile(list) {
     if (!list.length) { placeholder('Waiting for a Claude Code session'); statusText('no session found yet'); return; }
     const ids = new Set(list.map(s => s.id)), keptFocus = focus && ids.has(focus.id);
-    galaxies = galaxies.filter(g => ids.has(g.id));
+    galaxies = galaxies.filter(g => ids.has(g.id) || (replay && replay.g === g));
     if (selected && !ids.has(selected.g.id)) { selected = null; showDetail(); }
     hover = null; hoverG = null;
     const before = galaxies.length;
     for (const s of list) {
       let g = galaxies.find(x => x.id === s.id); const fresh = !g;
       if (fresh) g = addGalaxy(s.id);
-      applyState(g, s, fresh);
+      if (!(replay && replay.g === g)) applyState(g, s, fresh);
     }
     if (!keptFocus) { focus = galaxies.slice().sort((a, b) => b.mtime - a.mtime)[0]; renderLegend(); }
     if (wantAll && galaxies.length > 1) { view = 'all'; wantAll = false; }
@@ -988,7 +1040,7 @@
     editBtn.hidden = true;
     placeholder('Connecting');
     statusText('connecting to the local feed');
-    const es = new EventSource('/events');
+    es = new EventSource('/events');
     es.onopen = () => { connected = true; };
     es.onmessage = ev => {
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
@@ -998,7 +1050,7 @@
       if (m.build) { if (!build) build = m.build; else if (m.build !== build) { location.reload(); return; } }
       if (Array.isArray(m.full)) return reconcile(m.full);
       const g = m.id && galaxies.find(x => x.id === m.id);
-      if (!g || !m.state) return;
+      if (!g || !m.state || (replay && replay.g === g)) return;
       applyState(g, m.state, !!m.reset);
       (m.pulses || []).forEach(p => firePulse(g, p.ring, p.key, p.error));
     };
@@ -1014,7 +1066,13 @@
   window.addEventListener('resize', resize);
   resize();
   buildStars();
-  if (live) connect();
+  const EMBED = window.__REPLAY__;
+  if (EMBED && Array.isArray(EMBED.frames) && EMBED.frames.length) {
+    // a saved recording: plays one session on a loop, with no server behind it
+    const g = addGalaxy(String(EMBED.id || 'recording')); g.project = EMBED.project || 'session';
+    focus = g; editBtn.hidden = true; sessBtn.hidden = true;
+    startReplay(EMBED, g, true); renderLegend();
+  } else if (live) connect();
   else {
     content = loadContent();
     const mine = addGalaxy('mine');
