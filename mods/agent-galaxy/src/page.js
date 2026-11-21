@@ -8,7 +8,7 @@
       { name: 'Memory',   items: ['repo uses pytest', 'tokens expire in 15 min', 'CI runs on every push', 'last auth fix was in March', 'staging has its own clock'] },
       { name: 'Thoughts', items: ['why only on CI?', 'clock skew?', 'is the mock stale?', 'check the timezone', 'compare with main', 'is it flaky?', 'ask before force-push', 'smaller diff first'] },
       { name: 'Context',  items: ['Run the tests before every commit', 'Never log a token', 'Keep diffs small', 'Never force-push to main', 'skill: test-runner', 'Tokens are refreshed by the gateway'] } ] },
-    { id: 'ex-2', project: 'game', core: 'Add a boss fight to level 3', rings: [
+    { id: 'ex-2', project: 'game', status: 'waiting', core: 'Add a boss fight to level 3', rings: [
       { name: 'Plan',     items: ['sketch the attack patterns', 'add a health bar', 'tune the hitboxes', 'playtest twice', 'record a clip'] },
       { name: 'Tools',    items: ['editor', 'sprite packer', 'shell', 'test runner'] },
       { name: 'Memory',   items: ['60 fps target', 'player has 3 lives', 'levels load from JSON', 'sound is still mono'] },
@@ -23,7 +23,7 @@
   ];
   const PALETTE = ['#7fd4ff', '#5fe3c0', '#b9a2ff', '#ff8fb1', '#ffd27a', '#9bb8ff'];
   const TILTS = [[0.12, 0.06], [-0.48, 0.28], [0.62, -0.36], [-0.22, -0.62], [0.3, -0.14], [-0.75, 0.15]];
-  const CORE_RGB = [255, 196, 107];
+  const CORE_RGB = [255, 196, 107], ERR_RGB = [255, 92, 92];
   const STORE_KEY = 'agent-galaxy-content-v1';
   const F = 1100, TAU = Math.PI * 2;
 
@@ -60,7 +60,7 @@
     const used = new Set(galaxies.map(g => g.slot)); let slot = 0; while (used.has(slot)) slot++;
     const tx = slot ? (((slot * 37) % 11) / 11 - 0.5) * 0.9 : 0, tz = slot ? (((slot * 53) % 13) / 13 - 0.5) * 0.8 : 0;
     const g = { id, slot, pos: slotPos(slot), ocx: Math.cos(tx), osx: Math.sin(tx), ocz: Math.cos(tz), osz: Math.sin(tz), rot: slot * 1.7,
-      project: '', core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
+      project: '', status: 'working', state: 'working', look: null, core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
       c: { x: 0, y: 0, s: 1 }, cz: 0, depth: F, lod: 1, detail: true, visible: true, hit: null };
     galaxies.push(g); return g;
   }
@@ -74,7 +74,7 @@
     return { core: EXAMPLES[0].core, rings: JSON.parse(JSON.stringify(EXAMPLES[0].rings)) };
   }
   function saveContent() { try { localStorage.setItem(STORE_KEY, JSON.stringify(content)); } catch (e) {} }
-  const toState = (c, project) => ({ project, core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
+  const toState = (c, project) => ({ project, status: c.status, core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
   let content = null;
 
   function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
@@ -103,6 +103,7 @@
     core = s.core || '';
     if (s.project) g.project = s.project;
     if (s.mtime) g.mtime = s.mtime;
+    if (s.status) g.status = s.status;
     syncRings(s.rings.map(r => r.name));
     const seen = new Set();
     s.rings.forEach((r, i) => {
@@ -112,12 +113,12 @@
         const target = (j / Math.max(n, 1)) * TAU + i * 0.9;
         let w = words.find(x => x.ring === i && x.key === key && !x.dying);
         if (!w) {
-          w = { g, key, ring: i, a0: target, ang: target, k: 0, glow: 0, birth: clock + (stagger ? 0.1 + i * 0.12 + j * 0.05 : 0), dying: 0, box: null, p: null, life: 0, h: [...key].reduce((s, ch) => (s * 31 + ch.charCodeAt(0)) % 9973, 7) };
+          w = { g, key, ring: i, a0: target, ang: target, k: 0, glow: 0, birth: clock + (stagger ? 0.1 + i * 0.12 + j * 0.05 : 0), dying: 0, box: null, p: null, life: 0, flash: 0, h: [...key].reduce((s, ch) => (s * 31 + ch.charCodeAt(0)) % 9973, 7) };
           words.push(w);
         }
         w.text = it.text; w.detail = it.detail || it.text; w.target = target; seen.add(w);
         w.n = it.n != null ? Math.max(1, it.n) : 1 + w.h % 4;   // how often it was used: bigger planet, more moons
-        w.idle = !!it.idle;   // context the agent has but has not opened yet
+        w.idle = !!it.idle; w.error = !!it.error;   // error: this step failed or was declined   // context the agent has but has not opened yet
       });
     });
     for (const w of words) {
@@ -132,13 +133,13 @@
     menuDirty = true;
   }
 
-  function firePulse(g, ringName, key) {
+  function firePulse(g, ringName, key, error) {
     use(g);
     const i = rings.findIndex(r => r.name === ringName);
     const w = words.find(x => x.ring === i && x.key === String(key) && !x.dying);
     if (w && rings[i].visible) {
       if (pulses.length > 12) pulses.shift();
-      pulses.push({ word: w, t: 0 }); coreKick = 1;
+      pulses.push({ word: w, t: 0, error: !!error }); coreKick = 1;
     }
     save();
     if (!w) return;
@@ -155,23 +156,37 @@
     gr.addColorStop(0, rgba(rgb, 1)); gr.addColorStop(hard ? 0.16 : 0.4, rgba(rgb, hard ? 0.42 : 0.28)); gr.addColorStop(1, rgba(rgb, 0));
     g.fillStyle = gr; g.fillRect(0, 0, size, size); return c;
   }
-  function raySprite() {
+  function raySprite(c1 = CORE_RGB, c2 = [255, 120, 70]) {
     const size = 512, c = document.createElement('canvas'); c.width = c.height = size;
     const g = c.getContext('2d'), h = size / 2;
     g.globalCompositeOperation = 'lighter';
     for (let i = 0; i < 130; i++) {
       const a = Math.random() * TAU, len = h * (0.3 + Math.pow(Math.random(), 2) * 0.7), al = 0.08 + Math.random() * 0.3;
       const gr = g.createLinearGradient(h, h, h + Math.cos(a) * len, h + Math.sin(a) * len);
-      gr.addColorStop(0, rgba(CORE_RGB, al)); gr.addColorStop(1, rgba([255, 120, 70], 0));
+      gr.addColorStop(0, rgba(c1, al)); gr.addColorStop(1, rgba(c2, 0));
       g.strokeStyle = gr; g.lineWidth = 0.6 + Math.random() * 1.8;
       g.beginPath(); g.moveTo(h, h); g.lineTo(h + Math.cos(a) * len, h + Math.sin(a) * len); g.stroke();
     }
     return c;
   }
   const SPR = { white: glowSprite([255, 255, 255], 64, true), warm: glowSprite([255, 190, 120], 128, true), halo: glowSprite([255, 160, 90], 256, false),
-    blue: glowSprite([150, 200, 255], 64, true), pink: glowSprite([255, 130, 190], 64, true) };
+    blue: glowSprite([150, 200, 255], 64, true), pink: glowSprite([255, 130, 190], 64, true), err: glowSprite(ERR_RGB, 64, true) };
   const NEB = [[70, 130, 255], [140, 100, 255], [255, 100, 170], [60, 210, 200], [255, 160, 90]].map(c => glowSprite(c, 256, false));
   const RAYS = raySprite();
+  // The core shows the session's state: working (amber), your turn (blue) or quiet (dim).
+  const LOOKS = {
+    working: { rgb: CORE_RGB, text: '#fff4dc', dark: ['rgba(34,18,6,0.94)', 'rgba(24,12,8,0.82)', 'rgba(24,12,8,0)'], label: 'CORE', gain: 1, halo: SPR.halo, warm: SPR.warm, rays: RAYS },
+    waiting: { rgb: [120, 225, 255], text: '#eafaff', dark: ['rgba(5,20,36,0.94)', 'rgba(5,14,28,0.84)', 'rgba(5,14,28,0)'], label: 'YOUR TURN', gain: 1,
+      halo: glowSprite([70, 160, 255], 256, false), warm: glowSprite([140, 220, 255], 128, true), rays: raySprite([120, 225, 255], [60, 120, 255]) },
+    quiet: { rgb: [196, 176, 150], text: '#efe6d8', dark: ['rgba(26,20,14,0.94)', 'rgba(18,14,10,0.84)', 'rgba(18,14,10,0)'], label: 'QUIET', gain: 0.5,
+      halo: glowSprite([170, 140, 110], 256, false), warm: glowSprite([200, 180, 150], 128, true), rays: raySprite([196, 176, 150], [150, 120, 100]) }
+  };
+  function stateOf(g) {
+    if (!live) return g.status || 'working';
+    const idle = Date.now() - (g.mtime || Date.now());
+    if (g.status === 'waiting') return idle > 2500 ? 'waiting' : 'working';   // a reply is often followed at once by a tool call
+    return idle > 60000 ? 'quiet' : 'working';
+  }
 
   let far = [], bulge = [], nebula = [], accr = [], shots = [], shotTimer = 3;
 
@@ -389,6 +404,7 @@
 
   function drawWord(w) {
     const r = rings[w.ring], p = w.p;
+    const bad = w.error || w.flash > 0.05, rgb = bad ? ERR_RGB : r.rgb, spr = bad ? SPR.err : r.sprite, col = bad ? '#ff5c5c' : r.color;
     const isHot = w === hover || w === selected;
     const depth = Math.max(0.28, Math.min(1, 0.72 - p.z / 620));
     const alpha = Math.min(1, depth + w.glow * 0.5 + (isHot ? 0.6 : 0)) * w.life * (w.idle && !isHot && w.glow < 0.05 ? 0.55 : 1);
@@ -396,7 +412,7 @@
     if (!G.detail) {   // far away: just a point of light
       const d = Math.max(3.5, (16 + w.glow * 40) * p.s);
       ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha;
-      ctx.drawImage(r.sprite, p.x - d / 2, p.y - d / 2, d, d);
+      ctx.drawImage(spr, p.x - d / 2, p.y - d / 2, d, d);
       ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; w.box = null; return;
     }
     const size = Math.max(9, (isHot ? 17 : 14.5) * Math.pow(p.s, 0.6));
@@ -406,7 +422,7 @@
       const g = ctx.createLinearGradient(c.x, c.y, p.x, p.y);
       g.addColorStop(0, rgba(CORE_RGB, 0.0));
       g.addColorStop(0.25, rgba(CORE_RGB, isHot ? 0.5 : 0.35 * w.glow));
-      g.addColorStop(1, rgba(r.rgb, isHot ? 0.8 : 0.6 * w.glow));
+      g.addColorStop(1, rgba(rgb, isHot ? 0.8 : 0.6 * w.glow));
       ctx.strokeStyle = g; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(p.x, p.y); ctx.stroke();
     }
 
@@ -414,33 +430,33 @@
     ctx.globalCompositeOperation = 'lighter';
     for (let j = 1; j <= 12; j++) {
       const q = ringPoint(r, w.ang - j * 0.028, w.k), f = 1 - j / 13;
-      ctx.fillStyle = rgba(r.rgb, alpha * 0.55 * f * f);
+      ctx.fillStyle = rgba(rgb, alpha * 0.55 * f * f);
       const d = 3.2 * q.s * f; ctx.fillRect(q.x - d / 2, q.y - d / 2, d, d);
     }
     // each item is a small planet lit by the core; it grows and gains moons the more it is used
     const nr = (3.4 + Math.min(5, (w.n - 1) * 0.85) + w.glow * 2 + (isHot ? 1.5 : 0)) * p.s;
     const gd = nr * 2 + (20 + w.glow * 46 + (isHot ? 22 : 0)) * p.s;
-    ctx.globalAlpha = alpha * 0.9; ctx.drawImage(r.sprite, p.x - gd / 2, p.y - gd / 2, gd, gd); ctx.globalAlpha = 1;
+    ctx.globalAlpha = alpha * 0.9; ctx.drawImage(spr, p.x - gd / 2, p.y - gd / 2, gd, gd); ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     let lx = G.c.x - p.x, ly = G.c.y - p.y; const ll = Math.hypot(lx, ly) || 1; lx /= ll; ly /= ll;
     const pg = ctx.createRadialGradient(p.x + lx * nr * 0.5, p.y + ly * nr * 0.5, nr * 0.08, p.x, p.y, nr);
-    pg.addColorStop(0, 'rgba(255,255,255,1)'); pg.addColorStop(0.45, rgba(r.rgb, 1));
-    pg.addColorStop(1, rgba([r.rgb[0] * 0.22 | 0, r.rgb[1] * 0.22 | 0, r.rgb[2] * 0.28 | 0], 1));
+    pg.addColorStop(0, 'rgba(255,255,255,1)'); pg.addColorStop(0.45, rgba(rgb, 1));
+    pg.addColorStop(1, rgba([rgb[0] * 0.22 | 0, rgb[1] * 0.22 | 0, rgb[2] * 0.28 | 0], 1));
     ctx.globalAlpha = alpha; ctx.fillStyle = pg;
     ctx.beginPath(); ctx.arc(p.x, p.y, nr, 0, TAU); ctx.fill();
     if (w.n >= 4) {   // heavily used: a ringed planet
-      ctx.strokeStyle = rgba(r.rgb, 0.85); ctx.lineWidth = Math.max(1, 1.3 * p.s);
+      ctx.strokeStyle = rgba(rgb, 0.85); ctx.lineWidth = Math.max(1, 1.3 * p.s);
       ctx.beginPath(); ctx.ellipse(p.x, p.y, nr * 2, nr * 0.55, -0.45, 0.25, Math.PI - 0.25); ctx.stroke();
     }
     const moons = Math.min(3, w.n - 1);
     for (let m = 0; m < moons; m++) {
       const ma = clock * (1.5 - m * 0.35) + m * 2.1 + w.h, mr = nr + (6 + m * 4.5) * p.s;
-      ctx.fillStyle = m === 0 ? 'rgba(235,242,255,0.95)' : rgba(r.rgb, 0.9);
+      ctx.fillStyle = m === 0 ? 'rgba(235,242,255,0.95)' : rgba(rgb, 0.9);
       ctx.beginPath(); ctx.arc(p.x + Math.cos(ma) * mr, p.y + Math.sin(ma) * mr * 0.42, Math.max(1, 1.5 * p.s), 0, TAU); ctx.fill();
     }
     ctx.globalAlpha = 1;
     if (isHot || w.glow > 0.05) {
-      ctx.strokeStyle = rgba(r.rgb, alpha * 0.8); ctx.lineWidth = 1;
+      ctx.strokeStyle = rgba(rgb, alpha * 0.8); ctx.lineWidth = 1;
       const spin = clock * 1.4 + w.ring, rr = nr + (moons ? 8 + moons * 4.5 : 5) * p.s;
       ctx.beginPath(); ctx.arc(p.x, p.y, rr, spin, spin + 2.2); ctx.stroke();
       ctx.beginPath(); ctx.arc(p.x, p.y, rr, spin + Math.PI, spin + Math.PI + 2.2); ctx.stroke();
@@ -449,12 +465,13 @@
     ctx.font = `${isHot ? 600 : 500} ${size}px "Chakra Petch", "Trebuchet MS", sans-serif`;
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     const tx = p.x + nr + (10 + Math.min(3, w.n - 1) * 4.5) * p.s, tw = ctx.measureText(w.text).width;
-    if (isHot || w.glow > 0.3) { ctx.shadowColor = r.color; ctx.shadowBlur = 12; }
+    if (isHot || w.glow > 0.3) { ctx.shadowColor = col; ctx.shadowBlur = 12; }
     ctx.fillStyle = isHot || w.glow > 0.3 ? rgba([255, 255, 255], alpha) : rgba([219, 233, 255], alpha * 0.92);
+    if (bad) ctx.fillStyle = rgba([255, 178, 178], alpha);
     ctx.fillText(w.text, tx, p.y);
     ctx.shadowBlur = 0;
     if (isHot) {
-      ctx.strokeStyle = rgba(r.rgb, 0.8); ctx.lineWidth = 1;
+      ctx.strokeStyle = rgba(rgb, 0.8); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(tx, p.y + size * 0.72); ctx.lineTo(tx + tw, p.y + size * 0.72); ctx.stroke();
     }
     w.box = w.life > 0.6 && !w.dying ? [p.x - nr - 6, p.y - size * 0.8, tx + tw + 4, p.y + size * 0.8] : null;
@@ -472,41 +489,41 @@
   }
 
   function drawCore() {
-    const c = cam(0, 0, 0), s = c.s;
+    const c = cam(0, 0, 0), s = c.s, K = G.look || LOOKS.working;
     const beat = 1 + Math.sin(clock * 1.7) * 0.045 + coreKick * 0.09;
     const R = 96 * s * beat;
 
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.55 + coreKick * 0.25; ctx.drawImage(SPR.halo, c.x - R * 3.4, c.y - R * 3.4, R * 6.8, R * 6.8);
+    ctx.globalAlpha = (0.55 + coreKick * 0.25) * K.gain; ctx.drawImage(K.halo, c.x - R * 3.4, c.y - R * 3.4, R * 6.8, R * 6.8);
     // slow counter-rotating light rays
     for (const [w, k, al] of [[0.05, 3.3, 0.6], [-0.033, 2.5, 0.5]]) {
-      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(clock * w); ctx.globalAlpha = al + coreKick * 0.3;
-      ctx.drawImage(RAYS, -R * k, -R * k, R * 2 * k, R * 2 * k); ctx.restore();
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(clock * w); ctx.globalAlpha = (al + coreKick * 0.3) * K.gain;
+      ctx.drawImage(K.rays, -R * k, -R * k, R * 2 * k, R * 2 * k); ctx.restore();
     }
     // anamorphic lens streak
     ctx.save(); ctx.translate(c.x, c.y); ctx.scale(1, 0.03); ctx.globalAlpha = 0.75 + coreKick * 0.25;
-    ctx.drawImage(SPR.warm, -R * 5.5, -R * 5.5, R * 11, R * 11); ctx.restore();
+    ctx.drawImage(K.warm, -R * 5.5, -R * 5.5, R * 11, R * 11); ctx.restore();
     ctx.save(); ctx.translate(c.x, c.y); ctx.scale(0.022, 1); ctx.globalAlpha = 0.3;
-    ctx.drawImage(SPR.warm, -R * 2.6, -R * 2.6, R * 5.2, R * 5.2); ctx.restore();
-    if (!G.detail) { ctx.globalAlpha = 0.9; ctx.drawImage(SPR.warm, c.x - R * 0.9, c.y - R * 0.9, R * 1.8, R * 1.8); }
+    ctx.drawImage(K.warm, -R * 2.6, -R * 2.6, R * 5.2, R * 5.2); ctx.restore();
+    if (!G.detail) { ctx.globalAlpha = 0.9; ctx.drawImage(K.warm, c.x - R * 0.9, c.y - R * 0.9, R * 1.8, R * 1.8); }
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     if (!G.detail) return;
 
     let g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R);
-    g.addColorStop(0, 'rgba(34,18,6,0.94)'); g.addColorStop(0.78, 'rgba(24,12,8,0.82)'); g.addColorStop(1, 'rgba(24,12,8,0)');
+    g.addColorStop(0, K.dark[0]); g.addColorStop(0.78, K.dark[1]); g.addColorStop(1, K.dark[2]);
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(c.x, c.y, R, 0, TAU); ctx.fill();
-    ctx.strokeStyle = rgba(CORE_RGB, 0.5); ctx.lineWidth = 1.5 * s; ctx.shadowColor = rgba(CORE_RGB, 1); ctx.shadowBlur = 18 * s;
+    ctx.strokeStyle = rgba(K.rgb, 0.5); ctx.lineWidth = 1.5 * s; ctx.shadowColor = rgba(K.rgb, 1); ctx.shadowBlur = 18 * s;
     ctx.beginPath(); ctx.arc(c.x, c.y, R * 0.8, 0, TAU); ctx.stroke(); ctx.shadowBlur = 0;
 
     const arcs = [[0.86, 0.5, 1.9, 2.4], [0.94, -0.33, 0.8, 1.2], [1.04, 0.2, 2.6, 1], [1.04, 0.2, 0.5, 1], [0.72, -0.8, 0.5, 1.4], [0.72, -0.8, 0.9, 1.4]];
     arcs.forEach(([k, w, len, lw], i) => {
       const a = clock * w + i * 2.1;
-      ctx.strokeStyle = rgba(CORE_RGB, i === 0 ? 0.95 : 0.55); ctx.lineWidth = lw * s;
+      ctx.strokeStyle = rgba(K.rgb, i === 0 ? 0.95 : 0.55); ctx.lineWidth = lw * s;
       ctx.beginPath(); ctx.arc(c.x, c.y, R * k, a, a + len); ctx.stroke();
     });
-    ctx.save(); ctx.setLineDash([2 * s, 7 * s]); ctx.strokeStyle = rgba(CORE_RGB, 0.4); ctx.lineWidth = 2 * s;
+    ctx.save(); ctx.setLineDash([2 * s, 7 * s]); ctx.strokeStyle = rgba(K.rgb, 0.4); ctx.lineWidth = 2 * s;
     ctx.beginPath(); ctx.arc(c.x, c.y, R * 1.32, -clock * 0.12, -clock * 0.12 + TAU); ctx.stroke(); ctx.restore();
-    ctx.strokeStyle = rgba(CORE_RGB, 0.5); ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(K.rgb, 0.5); ctx.lineWidth = 1;
     for (let i = 0; i < 48; i++) {
       const a = i / 48 * TAU - clock * 0.08, r1 = R * 1.12, r2 = R * (i % 4 === 0 ? 1.2 : 1.155);
       ctx.beginPath(); ctx.moveTo(c.x + Math.cos(a) * r1, c.y + Math.sin(a) * r1); ctx.lineTo(c.x + Math.cos(a) * r2, c.y + Math.sin(a) * r2); ctx.stroke();
@@ -517,13 +534,13 @@
     ctx.font = `600 ${fs}px "Chakra Petch", "Trebuchet MS", sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const lines = wrap(core, R * 1.4, long ? 5 : 4);
-    ctx.shadowColor = rgba(CORE_RGB, 0.9); ctx.shadowBlur = 14 * s;
-    ctx.fillStyle = '#fff4dc';
+    ctx.shadowColor = rgba(K.rgb, 0.9); ctx.shadowBlur = 14 * s;
+    ctx.fillStyle = K.text;
     lines.forEach((ln, i) => ctx.fillText(ln, c.x, c.y + (i - (lines.length - 1) / 2) * fs * 1.25 + 4 * s));
     ctx.shadowBlur = 0;
     ctx.font = `500 ${Math.max(8, 9.5 * s)}px "IBM Plex Mono", ui-monospace, monospace`;
-    ctx.fillStyle = rgba(CORE_RGB, 0.75);
-    ctx.fillText('CORE', c.x, c.y - R * 0.6);
+    ctx.fillStyle = rgba(K.rgb, 0.75);
+    ctx.fillText(K.label, c.x, c.y - R * 0.6);
   }
 
   function drawPulses() {
@@ -531,14 +548,14 @@
     ctx.globalCompositeOperation = 'lighter';
     for (const pl of pulses) {
       const p = pl.word.p; if (!p) continue;
-      const r = rings[pl.word.ring], t = ease(pl.t);
+      const r = rings[pl.word.ring], t = ease(pl.t), rgb = pl.error ? ERR_RGB : r.rgb, spr = pl.error ? SPR.err : r.sprite;
       const x = c.x + (p.x - c.x) * t, y = c.y + (p.y - c.y) * t;
       const t0 = Math.max(0, t - 0.35), x0 = c.x + (p.x - c.x) * t0, y0 = c.y + (p.y - c.y) * t0;
       const g = ctx.createLinearGradient(x0, y0, x, y);
-      g.addColorStop(0, rgba(r.rgb, 0)); g.addColorStop(1, rgba(r.rgb, 0.9));
+      g.addColorStop(0, rgba(rgb, 0)); g.addColorStop(1, rgba(rgb, 0.9));
       ctx.strokeStyle = g; ctx.lineWidth = 5 * q; ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x, y); ctx.stroke();
       ctx.lineWidth = 1.6; ctx.globalAlpha = 1; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x, y); ctx.stroke();
-      ctx.drawImage(r.sprite, x - 16 * q, y - 16 * q, 32 * q, 32 * q); ctx.drawImage(SPR.white, x - 7 * q, y - 7 * q, 14 * q, 14 * q);
+      ctx.drawImage(spr, x - 16 * q, y - 16 * q, 32 * q, 32 * q); ctx.drawImage(SPR.white, x - 7 * q, y - 7 * q, 14 * q, 14 * q);
     }
     ctx.globalCompositeOperation = 'source-over';
   }
@@ -548,10 +565,10 @@
     for (const wv of waves) {
       wv.t += dt / 0.9;
       const p = wv.word.p; if (!p) continue;
-      const r = rings[wv.word.ring];
+      const rgb = wv.error ? ERR_RGB : rings[wv.word.ring].rgb;
       for (const lag of [0, 0.25]) {
         const t = wv.t - lag; if (t <= 0 || t >= 1) continue;
-        ctx.strokeStyle = rgba(r.rgb, 0.8 * (1 - t) * (1 - t)); ctx.lineWidth = 1.5;
+        ctx.strokeStyle = rgba(rgb, 0.8 * (1 - t) * (1 - t)); ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(p.x, p.y, (8 + ease(t) * 46) * p.s, 0, TAU); ctx.stroke();
       }
       const t = Math.min(1, wv.t);
@@ -568,16 +585,16 @@
   // name plate under a galaxy that is too far away to read
   function drawTitle() {
     const c = G.c, hot = G === hoverG, y = c.y + Math.max(30, 310 * c.s) + 14;
-    const active = clock - G.lastEvent < 4;
+    const st = G.state, dot = st === 'waiting' ? LOOKS.waiting.rgb : st === 'quiet' ? [150, 150, 150] : CORE_RGB;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = '600 13px "Chakra Petch", "Trebuchet MS", sans-serif';
     const name = (G.project || 'session').toUpperCase(), tw = ctx.measureText(name).width;
     ctx.fillStyle = hot ? '#ffffff' : 'rgba(219,233,255,0.92)';
     ctx.fillText(name, c.x, y);
-    if (active) { ctx.fillStyle = rgba(CORE_RGB, 0.6 + 0.4 * Math.sin(clock * 8)); ctx.beginPath(); ctx.arc(c.x - tw / 2 - 11, y, 3, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = rgba(dot, st === 'working' && clock - G.lastEvent < 4 ? 0.6 + 0.4 * Math.sin(clock * 8) : 0.9); ctx.beginPath(); ctx.arc(c.x - tw / 2 - 11, y, 3, 0, TAU); ctx.fill();
     ctx.font = '400 11px "IBM Plex Mono", ui-monospace, monospace';
     ctx.fillStyle = hot ? 'rgba(219,233,255,0.95)' : 'rgba(127,147,184,0.95)';
-    ctx.fillText(clip(core, 46), c.x, y + 17);
+    ctx.fillText((st === 'waiting' ? 'your turn · ' : st === 'quiet' ? 'quiet · ' : '') + clip(core, 40), c.x, y + 17);
     if (hot && G.hit) {
       ctx.strokeStyle = rgba(CORE_RGB, 0.7); ctx.lineWidth = 1;
       for (let i = 0; i < 4; i++) { const a = clock * 0.5 + i * TAU / 4; ctx.beginPath(); ctx.arc(c.x, c.y, G.hit.r, a, a + 0.9); ctx.stroke(); }
@@ -635,7 +652,6 @@
   function age(g) {
     if (!live || !g.mtime) return '';
     const s = (Date.now() - g.mtime) / 1000;
-    if (s < 20) return 'working now';
     if (s < 3600) return `idle ${Math.max(1, Math.round(s / 60))} min`;
     if (s < 86400) return `idle ${Math.round(s / 3600)} h`;
     return `idle ${Math.round(s / 86400)} d`;
@@ -646,15 +662,15 @@
       const b = document.createElement('button'); b.type = 'button';
       if (current) b.setAttribute('aria-current', 'true');
       const t = document.createElement('b'); t.textContent = title;
-      const s = document.createElement('small'); s.textContent = sub; if (on) s.className = 'on';
+      const s = document.createElement('small'); s.textContent = sub; if (on) s.className = on === 'turn' ? 'turn' : 'on';
       b.append(t, s); b.addEventListener('click', fn); menu.append(b);
     };
     if (live) row('Follow the action', follow ? 'On. The view jumps to whichever session starts working.' : 'Off. The view stays on the session you pick.', follow, false, () => { follow = !follow; renderMenu(); });
     if (galaxies.length > 1) row('All sessions', `Show all ${galaxies.length} galaxies at once`, false, view === 'all', () => { setView('all'); closeMenu(); });
     if (menu.children.length) menu.append(document.createElement('hr'));
     for (const g of galaxies.slice().sort((a, b) => (b.mtime - a.mtime) || (a.slot - b.slot))) {
-      const a = age(g);
-      row(g.project || 'session', clip(g.core, 72) + (a ? ' · ' + a : ''), a === 'working now', g === focus && view === 'single', () => { setFocus(g, true); closeMenu(); });
+      const st = stateOf(g), a = st === 'waiting' ? 'your turn' : st === 'working' ? 'working now' : age(g) || 'quiet';
+      row(g.project || 'session', clip(g.core, 72) + ' · ' + a, st === 'waiting' ? 'turn' : st === 'working', g === focus && view === 'single', () => { setFocus(g, true); closeMenu(); });
     }
     menuDirty = false; menuAt = clock;
   }
@@ -697,6 +713,7 @@
   function prepare(g) {
     const p = proj(g.pos[0] - camT[0], g.pos[1] - camT[1], g.pos[2] - camT[2]);
     g.cz = p.z; g.depth = p.z + camD; g.c = p;
+    g.state = stateOf(g); g.look = LOOKS[g.state];
     g.lod = F / Math.max(60, g.depth);
     g.visible = g.depth > 700;
     g.detail = g.visible && g.lod > 0.6;
@@ -707,19 +724,19 @@
   function step(dt) {
     for (const pl of pulses) {
       pl.t += dt / 0.8;
-      if (pl.t >= 1) { pl.word.glow = 1; rings[pl.word.ring].heat = 1; waves.push({ word: pl.word, t: 0, rot: Math.random() * TAU }); }
+      if (pl.t >= 1) { pl.word.glow = 1; if (pl.error) pl.word.flash = 1; rings[pl.word.ring].heat = 1; waves.push({ word: pl.word, t: 0, rot: Math.random() * TAU, error: pl.error }); }
     }
     pulses = pulses.filter(pl => pl.t < 1);
     coreKick = Math.max(0, coreKick - dt * 1.6);
     for (const r of rings) r.heat = Math.max(0, r.heat - dt * 0.6);
 
-    if (!live && speed > 0 && !pulses.length) {   // example mode: attention wanders at random
+    if (!live && speed > 0 && !pulses.length && G.state !== 'waiting') {   // example mode: attention wanders at random
       G.demoTimer -= dt;
       if (G.demoTimer <= 0) {
         const pool = words.filter(w => rings[w.ring].visible && !w.dying);
         if (pool.length) {
           const w = pool[Math.floor(Math.random() * pool.length)];
-          pulses.push({ word: w, t: 0 }); coreKick = 1; G.lastEvent = clock; setStatus(G, w);
+          pulses.push({ word: w, t: 0, error: Math.random() < 0.1 }); coreKick = 1; G.lastEvent = clock; setStatus(G, w);
         }
         G.demoTimer = (G === focus ? 1.7 : 3.2) + Math.random() * 1.8;
       }
@@ -727,7 +744,7 @@
 
     for (const w of words) {
       const r = rings[w.ring];
-      w.glow = Math.max(0, w.glow - dt * 0.55);
+      w.glow = Math.max(0, w.glow - dt * 0.55); w.flash = Math.max(0, w.flash - dt * 0.3);
       const d = ((w.target - w.a0 + Math.PI) % TAU + TAU) % TAU - Math.PI;
       w.a0 += d * Math.min(1, dt * 2.5);
       const fade = w.dying ? Math.max(0, 1 - (clock - w.dying) / 0.7) : 1;
@@ -782,7 +799,11 @@
     for (const g of galaxies) prepare(g);
     for (const g of galaxies) { use(g); step(dt); save(); }
 
-    if (live && connected && !idleShown && clock - lastNote > 6) { statusText('waiting for the agent'); idleShown = true; }
+    if (focus && view === 'single' && idleShown !== focus.state && (focus.state !== 'working' ? clock - lastNote > 1.5 : live && connected && clock - lastNote > 6)) {
+      const st = focus.state;
+      statusText(st === 'waiting' ? 'your turn: the agent has finished and is waiting for you' : st === 'quiet' ? 'quiet: no activity for over a minute' : 'working');
+      idleShown = st;
+    }
     if (!menu.hidden && (menuDirty || clock - menuAt > 2)) renderMenu();
 
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -938,7 +959,7 @@
       const g = m.id && galaxies.find(x => x.id === m.id);
       if (!g || !m.state) return;
       applyState(g, m.state, !!m.reset);
-      (m.pulses || []).forEach(p => firePulse(g, p.ring, p.key));
+      (m.pulses || []).forEach(p => firePulse(g, p.ring, p.key, p.error));
     };
     es.onerror = () => { connected = false; statusText('lost the local feed, retrying'); };
   }

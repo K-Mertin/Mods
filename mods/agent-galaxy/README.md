@@ -33,6 +33,8 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 - An item is a small planet: it grows and gains moons the more it is used. Context items the agent has not opened are dimmed.
 - The session menu switches sessions; **All sessions** (or Esc) shows every recent session as its own galaxy.
 - Click an item for its full text.
+- A step that failed or was declined turns its planet red, and the pulse that reports it is red too.
+- The core shows the session's state: amber while the agent works, blue with **YOUR TURN** when it has finished and is waiting for you, dim with **QUIET** after a minute without activity.
 
 ## What it reads
 

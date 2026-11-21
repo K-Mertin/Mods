@@ -38,7 +38,7 @@ const clients = new Set();
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
   const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: 'Waiting for the first prompt',
-    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map() };
+    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map() };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
 }
@@ -181,20 +181,34 @@ function hit(S, key, pulse) {
   for (const k of contextKeys(S, key)) { S.pending.push({ ring: 'Context', key: k }); S.dirty = true; }
 }
 
+// A tool call came back as an error (it failed, or the user declined it).
+function markError(S, id, pulse) {
+  const act = S.rings.Actions.get(id), name = S.toolOf.get(id), tool = name && S.rings.Tools.get(name);
+  if (act) act.error = true;
+  if (tool) tool.fails = (tool.fails || 0) + 1;
+  S.dirty = true;
+  if (!pulse) return;
+  if (act) S.pending.push({ ring: 'Actions', key: id, error: true });
+  if (tool) S.pending.push({ ring: 'Tools', key: name, error: true });
+}
+function setStatus(S, status) { if (S.status !== status) { S.status = status; S.dirty = true; } }
+
 function handle(S, o, pulse) {
   if (!o || typeof o !== 'object' || !o.message) return;
   if (o.cwd && String(o.cwd) !== S.cwd) { S.cwd = String(o.cwd); S.cwdChanged = true; const p = path.basename(S.cwd); if (p && p !== S.project) { S.project = p; S.dirty = true; } }
   const c = o.message.content, id = o.uuid || String(S.seq);
   if (o.type === 'user') {
+    if (Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_result') { setStatus(S, 'working'); if (b.is_error) markError(S, b.tool_use_id, pulse); }
     if (o.isMeta || o.isSidechain) return;
     let text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
     text = flat(text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' '));
     if (!text || /^(<|Caveat:|\[Request interrupted)/.test(text)) return;
-    S.core = clip(text, 120); S.dirty = true;
+    S.core = clip(text, 120); S.dirty = true; setStatus(S, 'working');
   } else if (o.type === 'assistant' && Array.isArray(c)) {
     c.forEach((b, i) => {
       if (!b) return;
       if (b.type === 'tool_use' && b.name) {
+        if (b.id) { S.toolOf.set(b.id, b.name); if (S.toolOf.size > 600) S.toolOf.delete(S.toolOf.keys().next().value); }
         const label = toolLabel(b.name);
         touch(S, 'Tools', b.name, n => n > 1 ? `${label} ×${n}` : label, n => `${label}, used ${n} time${n > 1 ? 's' : ''}`, pulse);
         const fp = b.input && (b.input.file_path || b.input.notebook_path);
@@ -207,12 +221,19 @@ function handle(S, o, pulse) {
         if (s) touch(S, 'Thoughts', id + ':' + i, clip(s, 46), raw, pulse);
       }
     });
+    // working while tools are in flight; a reply with no tool call means the turn is over and it is the user's move
+    if (!o.isSidechain) {
+      const stop = o.message.stop_reason, tool = c.some(b => b && b.type === 'tool_use'), text = c.some(b => b && b.type === 'text' && b.text);
+      if (tool || stop === 'tool_use') setStatus(S, 'working');
+      else if (stop === 'end_turn' || stop === 'stop_sequence' || (text && !stop)) setStatus(S, 'waiting');
+    }
   }
 }
 
 function snapshot(S) {
-  return { id: S.id, project: S.project, core: S.core, mtime: S.mtime,
-    rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n }) => ({ key, text, detail, n })) })).concat([{ name: 'Context',
+  return { id: S.id, project: S.project, core: S.core, mtime: S.mtime, status: S.status,
+    rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
+      detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([{ name: 'Context',
       items: S.context.map(i => { const uses = (i.file ? S.hits.get(i.file) || 0 : 0) + (i.skill ? S.hits.get('skill:' + i.skill) || 0 : 0);
         return { key: i.key, text: i.text, detail: i.base + (uses ? ` · used ${uses} time${uses > 1 ? 's' : ''} this session` : ' · available, not opened in this session'), n: uses + 1, idle: !uses }; }) }]) };
 }
