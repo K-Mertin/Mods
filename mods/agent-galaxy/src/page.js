@@ -60,7 +60,7 @@
     const used = new Set(galaxies.map(g => g.slot)); let slot = 0; while (used.has(slot)) slot++;
     const tx = slot ? (((slot * 37) % 11) / 11 - 0.5) * 0.9 : 0, tz = slot ? (((slot * 53) % 13) / 13 - 0.5) * 0.8 : 0;
     const g = { id, slot, pos: slotPos(slot), ocx: Math.cos(tx), osx: Math.sin(tx), ocz: Math.cos(tz), osz: Math.sin(tz), rot: slot * 1.7,
-      project: '', status: 'working', state: 'working', look: null, core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
+      project: '', status: 'working', state: 'working', look: null, todos: [], core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
       c: { x: 0, y: 0, s: 1 }, cz: 0, depth: F, lod: 1, detail: true, visible: true, hit: null };
     galaxies.push(g); return g;
   }
@@ -74,7 +74,8 @@
     return { core: EXAMPLES[0].core, rings: JSON.parse(JSON.stringify(EXAMPLES[0].rings)) };
   }
   function saveContent() { try { localStorage.setItem(STORE_KEY, JSON.stringify(content)); } catch (e) {} }
-  const toState = (c, project) => ({ project, status: c.status, core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
+  const planTodos = c => { const p = c.rings.find(r => /plan/i.test(r.name)); if (!p) return []; const k = Math.floor(p.items.length * 0.4); return p.items.map((t, i) => ({ t, s: i < k ? 'done' : i === k ? 'doing' : 'todo' })); };
+  const toState = (c, project) => ({ project, status: c.status, todos: planTodos(c), core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
   let content = null;
 
   function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
@@ -104,6 +105,7 @@
     if (s.project) g.project = s.project;
     if (s.mtime) g.mtime = s.mtime;
     if (s.status) g.status = s.status;
+    g.todos = Array.isArray(s.todos) ? s.todos : [];
     syncRings(s.rings.map(r => r.name));
     const seen = new Set();
     s.rings.forEach((r, i) => {
@@ -529,6 +531,29 @@
       ctx.beginPath(); ctx.moveTo(c.x + Math.cos(a) * r1, c.y + Math.sin(a) * r1); ctx.lineTo(c.x + Math.cos(a) * r2, c.y + Math.sin(a) * r2); ctx.stroke();
     }
 
+    // the agent's to-do list as a segmented arc: done, in progress, still to do
+    const todos = G.todos;
+    if (todos.length) {
+      const n = todos.length, gap = n > 1 ? Math.min(0.07, 1.6 / n) : 0, span = TAU / n, rr = R * 1.47;
+      ctx.lineCap = 'butt';
+      todos.forEach((t, i) => {
+        const a0 = -Math.PI / 2 + i * span + gap / 2, a1 = a0 + span - gap;
+        if (t.s === 'doing') { ctx.strokeStyle = `rgba(255,255,255,${0.65 + 0.35 * Math.sin(clock * 5)})`; ctx.lineWidth = 4 * s; }
+        else { ctx.strokeStyle = rgba(K.rgb, t.s === 'done' ? 0.95 : 0.34); ctx.lineWidth = (t.s === 'done' ? 3.2 : 2.2) * s; }
+        ctx.beginPath(); ctx.arc(c.x, c.y, rr, a0, a1); ctx.stroke();
+      });
+      const done = todos.filter(t => t.s === 'done').length, doing = todos.find(t => t.s === 'doing');
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `500 ${Math.max(8, 9.5 * s)}px "IBM Plex Mono", ui-monospace, monospace`;
+      ctx.fillStyle = rgba(K.rgb, 0.85);
+      ctx.fillText(`${done} / ${n} DONE`, c.x, c.y + R * 0.64);
+      if (doing) {
+        ctx.font = `500 ${Math.max(9, 11 * s)}px "IBM Plex Mono", ui-monospace, monospace`;
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillText('▸ ' + clip(doing.t, 42), c.x, c.y + rr + 15 * s);
+      }
+    }
+
     const long = core.length > 48;
     const fs = Math.max(10, (long ? 13 : 17) * s);
     ctx.font = `600 ${fs}px "Chakra Petch", "Trebuchet MS", sans-serif`;
@@ -588,7 +613,7 @@
     const st = G.state, dot = st === 'waiting' ? LOOKS.waiting.rgb : st === 'quiet' ? [150, 150, 150] : CORE_RGB;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = '600 13px "Chakra Petch", "Trebuchet MS", sans-serif';
-    const name = (G.project || 'session').toUpperCase(), tw = ctx.measureText(name).width;
+    const name = (G.project || 'session').toUpperCase() + (G.todos.length ? `  ${G.todos.filter(t => t.s === 'done').length}/${G.todos.length}` : ''), tw = ctx.measureText(name).width;
     ctx.fillStyle = hot ? '#ffffff' : 'rgba(219,233,255,0.92)';
     ctx.fillText(name, c.x, y);
     ctx.fillStyle = rgba(dot, st === 'working' && clock - G.lastEvent < 4 ? 0.6 + 0.4 * Math.sin(clock * 8) : 0.9); ctx.beginPath(); ctx.arc(c.x - tw / 2 - 11, y, 3, 0, TAU); ctx.fill();

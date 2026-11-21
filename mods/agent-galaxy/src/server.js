@@ -38,7 +38,7 @@ const clients = new Set();
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
   const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: 'Waiting for the first prompt',
-    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map() };
+    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0 };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
 }
@@ -74,6 +74,8 @@ function describe(name, input) {
     case 'WebSearch': return ['search: ' + flat(i.query), null];
     case 'WebFetch': { let h = flat(i.url); try { h = new URL(i.url).hostname; } catch (e) {} return ['fetch ' + h, i.url]; }
     case 'Task': case 'Agent': return ['agent: ' + flat(i.description || i.subagent_type || 'subtask'), flat(i.prompt)];
+    case 'TaskCreate': return ['todo: ' + flat(i.subject || i.description), flat(i.description)];
+    case 'TaskUpdate': return [i.status ? `todo #${i.taskId}: ${String(i.status).replace('_', ' ')}` : null, null];
     case 'TodoWrite': { const t = (i.todos || []).find(x => x.status === 'in_progress'); return t ? ['todo: ' + flat(t.activeForm || t.content), null] : [null, null]; }
     default: { const v = Object.values(i).find(x => typeof x === 'string' && x.trim()); const m = /^mcp__.+?__(.+)$/.exec(name); return [(m ? m[1].replace(/_/g, ' ') : name) + (v ? ': ' + flat(v) : ''), null]; }
   }
@@ -181,6 +183,33 @@ function hit(S, key, pulse) {
   for (const k of contextKeys(S, key)) { S.pending.push({ ring: 'Context', key: k }); S.dirty = true; }
 }
 
+/* ---------- the agent's own to-do list ---------- */
+// Two shapes exist: TodoWrite sends the whole list each time; TaskCreate / TaskUpdate change one task at a time.
+const todoState = x => x === 'completed' ? 'done' : x === 'in_progress' ? 'doing' : 'todo';
+function todoTool(S, b) {
+  const i = b.input || {};
+  if (b.name === 'TodoWrite' && Array.isArray(i.todos)) {
+    S.todos = i.todos.map(t => ({ id: '', text: flat(t.content || t.subject), active: flat(t.activeForm), state: todoState(t.status) }));
+  } else if (b.name === 'TaskCreate' && (i.subject || i.description)) {
+    S.todos.push({ id: '', pending: b.id, text: flat(i.subject || i.description), active: flat(i.activeForm), state: 'todo' });
+  } else if (b.name === 'TaskUpdate' && i.taskId != null) {
+    const t = S.todos.find(x => x.id === String(i.taskId));
+    if (!t) return;
+    if (i.status === 'deleted') S.todos = S.todos.filter(x => x !== t);
+    else { if (i.status) t.state = todoState(i.status); if (i.subject) t.text = flat(i.subject); if (i.activeForm) t.active = flat(i.activeForm); }
+  } else return;
+  S.dirty = true;
+}
+// TaskCreate's result carries the new task's id; fall back to counting when it cannot be read.
+function todoResult(S, b) {
+  const t = S.todos.find(x => x.pending === b.tool_use_id);
+  if (!t) return;
+  const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(x => (x && x.text) || '').join(' ') : '';
+  const m = /(?:#|\bid["'\s:=]+|\btask\s+)(\d+)/i.exec(text);
+  S.taskSeq = m ? Math.max(S.taskSeq, Number(m[1])) : S.taskSeq + 1;
+  t.id = m ? m[1] : String(S.taskSeq); delete t.pending;
+}
+
 // A tool call came back as an error (it failed, or the user declined it).
 function markError(S, id, pulse) {
   const act = S.rings.Actions.get(id), name = S.toolOf.get(id), tool = name && S.rings.Tools.get(name);
@@ -198,7 +227,7 @@ function handle(S, o, pulse) {
   if (o.cwd && String(o.cwd) !== S.cwd) { S.cwd = String(o.cwd); S.cwdChanged = true; const p = path.basename(S.cwd); if (p && p !== S.project) { S.project = p; S.dirty = true; } }
   const c = o.message.content, id = o.uuid || String(S.seq);
   if (o.type === 'user') {
-    if (Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_result') { setStatus(S, 'working'); if (b.is_error) markError(S, b.tool_use_id, pulse); }
+    if (Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_result') { setStatus(S, 'working'); todoResult(S, b); if (b.is_error) markError(S, b.tool_use_id, pulse); }
     if (o.isMeta || o.isSidechain) return;
     let text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
     text = flat(text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' '));
@@ -209,6 +238,7 @@ function handle(S, o, pulse) {
       if (!b) return;
       if (b.type === 'tool_use' && b.name) {
         if (b.id) { S.toolOf.set(b.id, b.name); if (S.toolOf.size > 600) S.toolOf.delete(S.toolOf.keys().next().value); }
+        todoTool(S, b);
         const label = toolLabel(b.name);
         touch(S, 'Tools', b.name, n => n > 1 ? `${label} ×${n}` : label, n => `${label}, used ${n} time${n > 1 ? 's' : ''}`, pulse);
         const fp = b.input && (b.input.file_path || b.input.notebook_path);
@@ -232,6 +262,7 @@ function handle(S, o, pulse) {
 
 function snapshot(S) {
   return { id: S.id, project: S.project, core: S.core, mtime: S.mtime, status: S.status,
+    todos: S.todos.slice(0, 40).map(t => ({ t: clip(t.state === 'doing' && t.active ? t.active : t.text, 60), s: t.state })),
     rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
       detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([{ name: 'Context',
       items: S.context.map(i => { const uses = (i.file ? S.hits.get(i.file) || 0 : 0) + (i.skill ? S.hits.get('skill:' + i.skill) || 0 : 0);

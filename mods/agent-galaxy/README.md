@@ -34,6 +34,7 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 - The session menu switches sessions; **All sessions** (or Esc) shows every recent session as its own galaxy.
 - Click an item for its full text.
 - A step that failed or was declined turns its planet red, and the pulse that reports it is red too.
+- The agent's to-do list is a segmented arc around the core: bright for done, pulsing for in progress, faint for still to do, with the current task named underneath.
 - The core shows the session's state: amber while the agent works, blue with **YOUR TURN** when it has finished and is waiting for you, dim with **QUIET** after a minute without activity.
 
 ## What it reads
