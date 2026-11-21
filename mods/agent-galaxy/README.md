@@ -33,6 +33,7 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 - An item is a small planet: it grows and gains moons the more it is used. Context items the agent has not opened are dimmed.
 - The session menu switches sessions; **All sessions** (or Esc) shows every recent session as its own galaxy.
 - Click an item for its full text.
+- **Present** (or the P key) hides the controls, goes full screen and lets the camera drift; with several sessions it tours them, alternating with the view of all. Opening the page at `#present` starts that way, for a wall display.
 - **Replay** steps through the session on screen from its start, with a timeline you can scrub and a speed control. **Save as page** downloads that replay as one HTML file that plays on its own, with no server.
 - A step that failed or was declined turns its planet red, and the pulse that reports it is red too.
 - The agent's to-do list is a segmented arc around the core: bright for done, pulsing for in progress, faint for still to do, with the current task named underneath.
@@ -63,7 +64,7 @@ node mods/agent-galaxy/build.js
 - `src/server.js`: follows the transcripts and serves the page and its event stream
 - `src/page.html`, `src/page.js`: the page
 
-An open page reloads itself when the script restarts with a newer build.
+An open page reloads itself when the script restarts with a newer build. When frames run slow the page draws fewer stars, and restores them when there is room.
 
 Tests for the transcript parser (hand-written transcripts, not captures of real sessions):
 

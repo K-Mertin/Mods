@@ -66,6 +66,11 @@
     background: var(--panel); border: 1px solid var(--line); padding: 5px 10px; border-radius: 2px; }
   .speed input { width: 90px; accent-color: var(--core); }
 
+  body.present .hud, body.present .detail, body.present .menu, body.present .editor, body.present .replay { display: none; }
+  body.present canvas#stage { cursor: none; }
+  .present-hint { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 3; font-family: var(--font-mono); font-size: 12px; color: var(--ink-dim);
+    background: var(--panel); border: 1px solid var(--line); padding: 7px 12px; }
+  .present-hint[hidden] { display: none; }
   .replay { position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px;
     background: var(--panel); border: 1px solid var(--line); padding: 8px 12px; max-width: calc(100vw - 40px); backdrop-filter: blur(6px); }
   .replay[hidden] { display: none; }
@@ -132,6 +137,7 @@
 
 <div class="hud hud-tr">
   <span class="hint" id="hint">drag to turn · scroll to zoom · click a word</span>
+  <button class="btn" id="presentBtn" type="button">Present</button>
   <button class="btn" id="replayBtn" type="button" hidden>Replay</button>
   <button class="btn" id="allBtn" type="button" aria-pressed="false" hidden>All sessions</button>
   <button class="btn tagbtn" id="sessBtn" type="button" aria-expanded="false" aria-controls="sessMenu">Sessions</button>
@@ -145,6 +151,8 @@
 <div class="hud hud-br">
   <label class="speed" for="speed"><span>Spin</span><input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
 </div>
+
+<div class="present-hint" id="presentHint" hidden>Presenting. Press Esc or P to leave.</div>
 
 <div class="replay" id="replayBar" hidden>
   <button class="btn" id="rpPlay" type="button">Pause</button>

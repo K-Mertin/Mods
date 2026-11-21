@@ -258,7 +258,8 @@
   function drawBackdrop(dt) {
     ctx.globalCompositeOperation = 'lighter';
     const k = Math.max(W, H) / 1000 * 0.78 * (0.75 + 0.25 * zoom);
-    for (const s of far) {
+    for (let fi = 0; fi < far.length; fi += qStride) {
+      const s = far[fi];
       const x1 = s.x * cy + s.z * sy, z1 = -s.x * sy + s.z * cy;
       const z2 = s.y * sp + z1 * cp;
       if (z2 < 0) continue;
@@ -305,6 +306,7 @@
   }
 
   function drawNebula(front) {
+    if (front && qStride > 2) return;
     ctx.globalCompositeOperation = 'lighter';
     for (const n of nebula) {
       const a = n.a + G.rot + T * n.w * 0.18, p = cam(Math.cos(a) * n.r, n.y, Math.sin(a) * n.r);
@@ -318,7 +320,7 @@
 
   function drawStars(front) {
     ctx.globalCompositeOperation = 'lighter';
-    const stride = G.detail ? 1 : G.lod > 0.3 ? 2 : 3, boost = G.detail ? 1 : 1.6;
+    const stride = (G.detail ? 1 : G.lod > 0.3 ? 2 : 3) * qStride, boost = (G.detail ? 1 : 1.6) * (qStride > 1 ? 1.25 : 1);
     for (let i = 0; i < stars.length; i += stride) {
       const s = stars[i], a = s.a + G.rot + T * s.w * 0.18;
       const p = cam(Math.cos(a) * s.r, s.y, Math.sin(a) * s.r);
@@ -748,8 +750,40 @@
   allBtn.addEventListener('click', () => { closeMenu(); setView(view === 'all' ? 'single' : 'all'); });
   window.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
+    if (present) return setPresent(false);
     if (replay && !replay.embedded) return stopReplay();
     if (!menu.hidden) closeMenu(); else if (!editor.hidden) closeEditor(); else if (view === 'single') setView('all');
+  });
+
+  /* ---------- presenting: no controls, the camera drifts and tours the sessions ---------- */
+  let present = false, presentT = 0, presentIdx = 0, hintTimer = 0;
+  let qStride = 1, frameMs = 16, slowFor = 0, fastFor = 0;
+  function setPresent(on, viaClick) {
+    present = on; presentT = 0;
+    document.body.classList.toggle('present', on);
+    closeMenu(); closeEditor(); hover = null; hoverG = null;
+    const hint = $('presentHint'); clearTimeout(hintTimer); hint.hidden = !on;
+    if (on) hintTimer = setTimeout(() => { hint.hidden = true; }, 4000);
+    try {
+      if (on && viaClick && document.documentElement.requestFullscreen) { const p = document.documentElement.requestFullscreen(); if (p && p.catch) p.catch(() => {}); }
+      if (!on && document.fullscreenElement && document.exitFullscreen) { const p = document.exitFullscreen(); if (p && p.catch) p.catch(() => {}); }
+    } catch (e) {}
+  }
+  function cruise(dt) {
+    presentT += dt;
+    const k = Math.min(1, dt * 0.6);
+    pitch += (0.42 + 0.22 * Math.sin(clock * 0.11) - pitch) * k;
+    zoom += (1 + 0.14 * Math.sin(clock * 0.07) - zoom) * k;
+    if (galaxies.length < 2 || replay || presentT < (view === 'all' ? 9 : 18)) return;
+    presentT = 0;
+    if (view === 'all') { presentIdx = (presentIdx + 1) % galaxies.length; setFocus(galaxies[presentIdx], false); }
+    else setView('all');
+  }
+  $('presentBtn').addEventListener('click', () => setPresent(true, true));
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && present) setPresent(false); });
+  window.addEventListener('keydown', e => {
+    if ((e.key !== 'p' && e.key !== 'P') || e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;
+    setPresent(!present, true);
   });
 
   /* ---------- loop ---------- */
@@ -818,7 +852,16 @@
   }
 
   function frame(now) {
-    const dt = Math.min(0.05, (now - last) / 1000); last = now; clock += dt;
+    const rawMs = now - last;
+    const dt = Math.min(0.05, rawMs / 1000); last = now; clock += dt;
+    // keep the frame rate up: draw fewer stars when frames run slow, bring them back when there is room
+    if (rawMs < 250) {
+      frameMs += (rawMs - frameMs) * 0.05;
+      if (frameMs > 30) { slowFor += dt; fastFor = 0; } else if (frameMs < 19) { fastFor += dt; slowFor = 0; } else { slowFor = 0; fastFor = 0; }
+      if (slowFor > 2 && qStride < 3) { qStride++; slowFor = 0; frameMs = 22; }
+      if (fastFor > 8 && qStride > 1) { qStride--; fastFor = 0; }
+    }
+    if (present && !dragging) cruise(dt);
     const target = (hover || dragging) ? 0.12 : 1;
     timeScale += (target - timeScale) * Math.min(1, dt * 5);
     T += dt * timeScale * speed;
@@ -1082,5 +1125,6 @@
     if (wantAll) view = 'all';
     updateButtons();
   }
+  if (location.hash === '#present') setPresent(true, false);   // for a wall display: open the page already presenting
   requestAnimationFrame(t => { last = t; requestAnimationFrame(frame); });
 })();
