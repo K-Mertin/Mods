@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Galaxy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Layout idea: one full-screen 3D stage; thin instrument-style HUD pinned to the corners. Single dark theme by choice. */
+  :root {
+    color-scheme: dark;
+    --space: #050812;
+    --space-2: #0b1226;
+    --ink: #dbe9ff;
+    --ink-dim: #7f93b8;
+    --line: rgba(143, 190, 255, 0.22);
+    --core: #ffc46b;
+    --panel: rgba(9, 15, 32, 0.82);
+    --font-display: "Chakra Petch", "Trebuchet MS", "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(ellipse at 50% 45%, var(--space-2) 0%, var(--space) 70%);
+    color: var(--ink);
+    font-family: var(--font-display);
+    overflow: hidden;
+  }
+  body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1; background: radial-gradient(ellipse at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.6) 100%); }
+  .hud, .detail, .editor { z-index: 2; }
+  canvas#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas#stage.dragging { cursor: grabbing; }
+  canvas#stage.pointing { cursor: pointer; }
+
+  .hud { position: fixed; pointer-events: none; display: flex; gap: 10px; }
+  .hud > * { pointer-events: auto; }
+  .hud-tl { top: 18px; left: 20px; flex-direction: column; gap: 4px; max-width: min(70vw, 420px); }
+  .hud-tr { top: 18px; right: 20px; align-items: center; }
+  .hud-bl { bottom: 18px; left: 20px; flex-wrap: wrap; max-width: calc(100vw - 40px); align-items: center; }
+  .hud-br { bottom: 18px; right: 20px; align-items: center; }
+
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; margin: 0; }
+  .status { font-family: var(--font-mono); font-size: 12px; color: var(--ink-dim); min-height: 1.4em; }
+  .status b { color: var(--ink); font-weight: 500; }
+  .status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--core); margin-right: 8px; box-shadow: 0 0 8px var(--core); animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+
+  button, input[type="range"] { font: inherit; color: inherit; }
+  .btn, .chip {
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    padding: 7px 12px; border-radius: 2px; cursor: pointer;
+    backdrop-filter: blur(6px);
+  }
+  .btn:hover, .chip:hover { border-color: rgba(143, 190, 255, 0.6); }
+  .btn:focus-visible, .chip:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; }
+  .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+  .chip[aria-pressed="false"] { opacity: 0.4; }
+  .chip[aria-pressed="false"] i { box-shadow: none; }
+
+  .speed { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim);
+    background: var(--panel); border: 1px solid var(--line); padding: 5px 10px; border-radius: 2px; }
+  .speed input { width: 90px; accent-color: var(--core); }
+
+  .detail {
+    position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--c, var(--core));
+    padding: 10px 16px; max-width: min(88vw, 520px); backdrop-filter: blur(6px);
+  }
+  .detail[hidden] { display: none; }
+  .detail small { display: block; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--c, var(--core)); margin-bottom: 2px; }
+  .detail span { font-size: 16px; font-weight: 500; overflow-wrap: anywhere; display: block; max-height: 9em; overflow: auto; }
+
+  .editor {
+    position: fixed; top: 60px; right: 20px; width: min(400px, calc(100vw - 40px)); max-height: calc(100% - 130px);
+    background: var(--panel); border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 10px;
+    backdrop-filter: blur(8px); overflow: auto;
+  }
+  .editor[hidden] { display: none; }
+  .editor label { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-dim); }
+  .editor input[type="text"], .editor textarea {
+    width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); color: var(--ink);
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.5; padding: 8px 10px; border-radius: 2px;
+  }
+  .editor textarea { min-height: 190px; resize: vertical; }
+  .editor p { margin: 0; font-size: 12px; color: var(--ink-dim); font-family: var(--font-mono); line-height: 1.5; }
+  .editor .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .btn.primary { border-color: var(--core); color: var(--core); }
+
+  .tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--core); border: 1px solid var(--core); padding: 6px 10px; border-radius: 2px; background: var(--panel); max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag[hidden] { display: none; }
+  .tagbtn { color: var(--core); border-color: var(--core); max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn[aria-pressed="true"] { background: rgba(255, 196, 107, 0.16); border-color: var(--core); color: var(--core); }
+  .btn[hidden] { display: none; }
+  .menu { position: fixed; top: 60px; right: 20px; width: min(380px, calc(100vw - 40px)); max-height: calc(100% - 130px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); padding: 6px; display: flex; flex-direction: column; gap: 2px; backdrop-filter: blur(8px); z-index: 3; }
+  .menu[hidden] { display: none; }
+  .menu button { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; padding: 9px 12px; border-left: 2px solid transparent; display: flex; flex-direction: column; gap: 3px; }
+  .menu button:hover { background: rgba(143, 190, 255, 0.09); }
+  .menu button:focus-visible { outline: 2px solid var(--core); outline-offset: -2px; }
+  .menu button[aria-current="true"] { border-left-color: var(--core); background: rgba(255, 196, 107, 0.08); }
+  .menu b { font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; overflow-wrap: anywhere; }
+  .menu small { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-dim); line-height: 1.45; overflow-wrap: anywhere; }
+  .menu small.on { color: var(--core); }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+  .hint { font-family: var(--font-mono); font-size: 11px; color: var(--ink-dim); }
+  @media (max-width: 900px) { .hint { display: none; } }
+  @media (max-width: 620px) { .speed span { display: none; } .detail { bottom: 110px; } }
+  @media (prefers-reduced-motion: reduce) { .status .dot { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="3D view of an agent: a glowing core idea with rings of words orbiting it"></canvas>
+
+<div class="hud hud-tl">
+  <h1>Agent Galaxy</h1>
+  <div class="status" id="status" aria-live="off"><span class="dot"></span>starting up</div>
+</div>
+
+<div class="hud hud-tr">
+  <span class="hint" id="hint">drag to turn · scroll to zoom · click a word</span>
+  <button class="btn" id="allBtn" type="button" aria-pressed="false" hidden>All sessions</button>
+  <button class="btn tagbtn" id="sessBtn" type="button" aria-expanded="false" aria-controls="sessMenu">Sessions</button>
+  <button class="btn" id="editBtn" type="button" aria-expanded="false" aria-controls="editor">Edit content</button>
+</div>
+
+<div class="menu" id="sessMenu" hidden></div>
+
+<div class="hud hud-bl" id="legend" aria-label="Show or hide rings"></div>
+
+<div class="hud hud-br">
+  <label class="speed" for="speed"><span>Spin</span><input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
+</div>
+
+<div class="detail" id="detail" hidden><small id="detailRing"></small><span id="detailText"></span></div>
+
+<form class="editor" id="editor" hidden>
+  <label for="coreInput">Core idea</label>
+  <input type="text" id="coreInput" autocomplete="off">
+  <label for="ringsInput">Rings, inner to outer</label>
+  <textarea id="ringsInput" spellcheck="false"></textarea>
+  <p>One ring per line: a name, a colon, then the words or phrases separated by commas.</p>
+  <div class="row">
+    <button class="btn" type="button" id="resetBtn">Load the example</button>
+    <button class="btn primary" type="submit">Apply</button>
+  </div>
+</form>
+

@@ -64,3 +64,11 @@ After pushing to GitHub:
 | [hello](mods/hello) | `/hello [name]` command and a tool-call counter in the status line |
 | [monster](mods/monster) | Raise a pixel-art digital monster fed by your Claude Code work: tokens feed it, passing tests and commits cheer it, errors stress it, and how you work picks its evolution line (Forge, Scribe, Summoner, Wanderer). Lives in a band above the prompt; `/pet` opens its habitat with feed / play buttons |
 | [rts](mods/rts) | `/rts` opens a live pixel-art map of every session on this machine: agents, model/effort, tokens, cost, task progress, shells, who needs you, and messages. `/rts demo` shows sample data |
+
+## Other tools
+
+Not mods: standalone scripts kept alongside them.
+
+| Tool | What it does |
+| --- | --- |
+| [agent-galaxy](mods/agent-galaxy) | `node mods/agent-galaxy/agent-galaxy.js` opens a live 3D view of your Claude Code sessions: each session is a galaxy with its latest prompt at the core and its tools, files, actions, thoughts and context in orbit |
