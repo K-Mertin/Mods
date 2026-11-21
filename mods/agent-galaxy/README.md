@@ -35,6 +35,7 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 - Click an item for its full text.
 - A step that failed or was declined turns its planet red, and the pulse that reports it is red too.
 - The agent's to-do list is a segmented arc around the core: bright for done, pulsing for in progress, faint for still to do, with the current task named underneath.
+- A gauge above the core shows how full the agent's context is (it turns red past 80%) and the output tokens so far. The limit is assumed to be 200K, or 1M once use passes 200K.
 - The core shows the session's state: amber while the agent works, blue with **YOUR TURN** when it has finished and is waiting for you, dim with **QUIET** after a minute without activity.
 
 ## What it reads
@@ -56,3 +57,9 @@ node mods/agent-galaxy/build.js
 - `src/page.html`, `src/page.js`: the page
 
 An open page reloads itself when the script restarts with a newer build.
+
+Tests for the transcript parser (hand-written transcripts, not captures of real sessions):
+
+```bash
+node --test mods/agent-galaxy/test/*.test.js
+```

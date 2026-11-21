@@ -38,7 +38,7 @@ const clients = new Set();
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
   const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: 'Waiting for the first prompt',
-    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0 };
+    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
 }
@@ -108,7 +108,7 @@ function keyIdeas(file, max) {
     else if (/^[^\s|>]/.test(line)) paras.push(...clean(line).split(/(?<=[.!?。！？])\s+/));
   }
   let src = bullets.filter(x => x.length > 8);
-  if (src.length < 2) src = src.concat(paras.filter(x => x.length > 20));
+  if (src.length < 2) src = src.concat(paras.filter(x => x.length > 8));
   if (!src.length) src = heads.filter(x => x.length > 3);
   const out = [], seen = new Set();
   for (const full of src) { const short = shorten(full); if (seen.has(short)) continue; seen.add(short); out.push({ short, full }); if (out.length >= max) break; }
@@ -251,6 +251,15 @@ function handle(S, o, pulse) {
         if (s) touch(S, 'Thoughts', id + ':' + i, clip(s, 46), raw, pulse);
       }
     });
+    // token use: the latest request's input is the context in use; output is summed once per message
+    const u = o.message.usage;
+    if (u && !o.isSidechain) {
+      const ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      if (ctx && ctx !== S.ctx) { S.ctx = ctx; S.dirty = true; }
+      const mid = o.message.id || id, prev = S.outBy.get(mid) || 0, out = u.output_tokens || 0;
+      if (out > prev) { S.out += out - prev; S.outBy.set(mid, out); S.dirty = true; }
+      if (o.message.model) S.model = String(o.message.model);
+    }
     // working while tools are in flight; a reply with no tool call means the turn is over and it is the user's move
     if (!o.isSidechain) {
       const stop = o.message.stop_reason, tool = c.some(b => b && b.type === 'tool_use'), text = c.some(b => b && b.type === 'text' && b.text);
@@ -261,7 +270,7 @@ function handle(S, o, pulse) {
 }
 
 function snapshot(S) {
-  return { id: S.id, project: S.project, core: S.core, mtime: S.mtime, status: S.status,
+  return { id: S.id, project: S.project, core: S.core, mtime: S.mtime, status: S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
     todos: S.todos.slice(0, 40).map(t => ({ t: clip(t.state === 'doing' && t.active ? t.active : t.text, 60), s: t.state })),
     rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
       detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([{ name: 'Context',
@@ -333,31 +342,37 @@ function scan() {
 }
 
 /* ---------- server ---------- */
-const server = http.createServer((req, res) => {
-  const url = req.url.split('?')[0];
-  if (url === '/' || url === '/index.html') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(PAGE);
-  } else if (url === '/events') {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-    res.write('data: ' + JSON.stringify(full()) + '\n\n');
-    clients.add(res); req.on('close', () => clients.delete(res));
-  } else { res.writeHead(404); res.end('Not found'); }
-});
-server.on('error', e => {
-  console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is in use. Try: node ${path.basename(process.argv[1])} --port ${PORT + 1}` : e.message);
-  process.exit(1);
-});
-server.listen(PORT, '127.0.0.1', () => {
-  const url = `http://localhost:${PORT}`;
-  console.log(`Agent Galaxy is running at ${url}`);
-  console.log(`Watching ${ROOT}${FILTER ? ' (projects matching "' + FILTER + '")' : ''}`);
-  scan();
-  if (!tracked.size) console.log('No session transcripts found yet. Start Claude Code and this will pick it up.');
-  setInterval(poll, 300); setInterval(scan, 2000);
-  setInterval(() => { for (const S of tracked.values()) if (scanContext(S)) flush(S); }, 10000);
-  setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 15000);
-  if (!args.includes('--no-open')) {
-    const cmd = process.platform === 'darwin' ? `open "${url}"` : process.platform === 'win32' ? `start "" "${url}"` : `xdg-open "${url}"`;
-    exec(cmd, () => {});
-  }
-});
+function start() {
+  const server = http.createServer((req, res) => {
+    const url = req.url.split('?')[0];
+    if (url === '/' || url === '/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(PAGE);
+    } else if (url === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+      res.write('data: ' + JSON.stringify(full()) + '\n\n');
+      clients.add(res); req.on('close', () => clients.delete(res));
+    } else { res.writeHead(404); res.end('Not found'); }
+  });
+  server.on('error', e => {
+    console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is in use. Try: node ${path.basename(process.argv[1])} --port ${PORT + 1}` : e.message);
+    process.exit(1);
+  });
+  server.listen(PORT, '127.0.0.1', () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`Agent Galaxy is running at ${url}`);
+    console.log(`Watching ${ROOT}${FILTER ? ' (projects matching "' + FILTER + '")' : ''}`);
+    scan();
+    if (!tracked.size) console.log('No session transcripts found yet. Start Claude Code and this will pick it up.');
+    setInterval(poll, 300); setInterval(scan, 2000);
+    setInterval(() => { for (const S of tracked.values()) if (scanContext(S)) flush(S); }, 10000);
+    setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 15000);
+    if (!args.includes('--no-open')) {
+      const cmd = process.platform === 'darwin' ? `open "${url}"` : process.platform === 'win32' ? `start "" "${url}"` : `xdg-open "${url}"`;
+      exec(cmd, () => {});
+    }
+  });
+}
+
+// Run as a script, or load it from a test to use the parser on its own.
+if (require.main === module) start();
+else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };

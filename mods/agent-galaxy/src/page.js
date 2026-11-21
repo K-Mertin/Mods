@@ -2,13 +2,13 @@
   'use strict';
 
   const EXAMPLES = [
-    { id: 'mine', project: 'auth-service', core: 'Fix the failing login test', rings: [
+    { id: 'mine', project: 'auth-service', usage: { ctx: 84000, out: 12400 }, core: 'Fix the failing login test', rings: [
       { name: 'Plan',     items: ['reproduce the failure', 'read the stack trace', 'find the commit that changed it', 'patch token refresh', 'run the full suite'] },
       { name: 'Tools',    items: ['shell', 'file search', 'editor', 'test runner', 'git log', 'web search'] },
       { name: 'Memory',   items: ['repo uses pytest', 'tokens expire in 15 min', 'CI runs on every push', 'last auth fix was in March', 'staging has its own clock'] },
       { name: 'Thoughts', items: ['why only on CI?', 'clock skew?', 'is the mock stale?', 'check the timezone', 'compare with main', 'is it flaky?', 'ask before force-push', 'smaller diff first'] },
       { name: 'Context',  items: ['Run the tests before every commit', 'Never log a token', 'Keep diffs small', 'Never force-push to main', 'skill: test-runner', 'Tokens are refreshed by the gateway'] } ] },
-    { id: 'ex-2', project: 'game', status: 'waiting', core: 'Add a boss fight to level 3', rings: [
+    { id: 'ex-2', project: 'game', status: 'waiting', usage: { ctx: 171000, out: 38000 }, core: 'Add a boss fight to level 3', rings: [
       { name: 'Plan',     items: ['sketch the attack patterns', 'add a health bar', 'tune the hitboxes', 'playtest twice', 'record a clip'] },
       { name: 'Tools',    items: ['editor', 'sprite packer', 'shell', 'test runner'] },
       { name: 'Memory',   items: ['60 fps target', 'player has 3 lives', 'levels load from JSON', 'sound is still mono'] },
@@ -60,7 +60,7 @@
     const used = new Set(galaxies.map(g => g.slot)); let slot = 0; while (used.has(slot)) slot++;
     const tx = slot ? (((slot * 37) % 11) / 11 - 0.5) * 0.9 : 0, tz = slot ? (((slot * 53) % 13) / 13 - 0.5) * 0.8 : 0;
     const g = { id, slot, pos: slotPos(slot), ocx: Math.cos(tx), osx: Math.sin(tx), ocz: Math.cos(tz), osz: Math.sin(tz), rot: slot * 1.7,
-      project: '', status: 'working', state: 'working', look: null, todos: [], core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
+      project: '', status: 'working', state: 'working', look: null, todos: [], usage: null, core: '', rings: [], words: [], pulses: [], waves: [], coreKick: 0, lastEvent: -99, demoTimer: 0.8 + slot * 0.7, mtime: 0,
       c: { x: 0, y: 0, s: 1 }, cz: 0, depth: F, lod: 1, detail: true, visible: true, hit: null };
     galaxies.push(g); return g;
   }
@@ -71,11 +71,11 @@
       const raw = localStorage.getItem(STORE_KEY);
       if (raw) { const c = JSON.parse(raw); if (c && c.core && Array.isArray(c.rings) && c.rings.length) return c; }
     } catch (e) {}
-    return { core: EXAMPLES[0].core, rings: JSON.parse(JSON.stringify(EXAMPLES[0].rings)) };
+    return { core: EXAMPLES[0].core, usage: EXAMPLES[0].usage, rings: JSON.parse(JSON.stringify(EXAMPLES[0].rings)) };
   }
   function saveContent() { try { localStorage.setItem(STORE_KEY, JSON.stringify(content)); } catch (e) {} }
   const planTodos = c => { const p = c.rings.find(r => /plan/i.test(r.name)); if (!p) return []; const k = Math.floor(p.items.length * 0.4); return p.items.map((t, i) => ({ t, s: i < k ? 'done' : i === k ? 'doing' : 'todo' })); };
-  const toState = (c, project) => ({ project, status: c.status, todos: planTodos(c), core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
+  const toState = (c, project) => ({ project, status: c.status, todos: planTodos(c), usage: c.usage, core: c.core, rings: c.rings.map(r => ({ name: r.name, items: r.items.map(t => ({ key: t, text: t })) })) });
   let content = null;
 
   function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
@@ -106,6 +106,7 @@
     if (s.mtime) g.mtime = s.mtime;
     if (s.status) g.status = s.status;
     g.todos = Array.isArray(s.todos) ? s.todos : [];
+    g.usage = s.usage && s.usage.ctx ? s.usage : null;
     syncRings(s.rings.map(r => r.name));
     const seen = new Set();
     s.rings.forEach((r, i) => {
@@ -552,6 +553,21 @@
         ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.fillText('▸ ' + clip(doing.t, 42), c.x, c.y + rr + 15 * s);
       }
+    }
+
+    // context gauge across the top: how full the agent's working memory is
+    const use = G.usage;
+    if (use) {
+      const limit = use.ctx > 200000 ? 1000000 : 200000, f = Math.min(1, use.ctx / limit), rg = R * 1.66;
+      const a0 = Math.PI * 1.14, a1 = Math.PI * 1.86, kf = x => x >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : x >= 1000 ? Math.round(x / 1000) + 'K' : String(x);
+      ctx.lineCap = 'butt'; ctx.lineWidth = 2 * s;
+      ctx.strokeStyle = rgba(K.rgb, 0.18); ctx.beginPath(); ctx.arc(c.x, c.y, rg, a0, a1); ctx.stroke();
+      ctx.strokeStyle = f > 0.8 ? rgba(ERR_RGB, 0.95) : rgba(K.rgb, 0.9); ctx.lineWidth = 3.4 * s;
+      ctx.beginPath(); ctx.arc(c.x, c.y, rg, a0, a0 + (a1 - a0) * f); ctx.stroke();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `500 ${Math.max(8, 9.5 * s)}px "IBM Plex Mono", ui-monospace, monospace`;
+      ctx.fillStyle = f > 0.8 ? rgba([255, 170, 170], 0.95) : rgba(K.rgb, 0.85);
+      ctx.fillText(`CONTEXT ${kf(use.ctx)} / ${kf(limit)}  ·  OUT ${kf(use.out || 0)}`, c.x, c.y - rg - 11 * s);
     }
 
     const long = core.length > 48;
