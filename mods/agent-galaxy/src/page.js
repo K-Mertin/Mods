@@ -22,7 +22,7 @@
       { name: 'Context',  items: ['Write for a first-time reader', 'Every example must run', 'Sentence case for headings', 'skill: docs', 'Say workspace, not project'] } ] }
   ];
   const PALETTE = ['#7fd4ff', '#5fe3c0', '#b9a2ff', '#ff8fb1', '#ffd27a', '#9bb8ff'];
-  const TILTS = [[0.12, 0.06], [-0.48, 0.28], [0.62, -0.36], [-0.22, -0.62], [0.3, -0.14], [-0.75, 0.15]];
+  const TILTS = [[0.12, 0.06], [-0.48, 0.28], [0.62, -0.36], [-0.22, -0.62], [-0.4, 0.2], [0.3, -0.14]];
   const CORE_RGB = [255, 196, 107], ERR_RGB = [255, 92, 92];
   const STORE_KEY = 'agent-galaxy-content-v1';
   const F = 1100, TAU = Math.PI * 2;
@@ -1054,7 +1054,7 @@
       .catch(() => statusText('could not load the replay for this session'));
   });
 
-  const EMPTY_RINGS = ['Tools', 'Files', 'Actions', 'Thoughts', 'Context'].map(name => ({ name, items: [] }));
+  const EMPTY_RINGS = ['Tools', 'Files', 'Actions', 'Thoughts', 'Agents', 'Context'].map(name => ({ name, items: [] }));
   function placeholder(text) {
     galaxies = []; selected = null; hover = null; hoverG = null; showDetail();
     const g = addGalaxy('__none');

@@ -30,6 +30,7 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 | Files | Files it read or edited |
 | Actions | Its recent steps: commands, searches, edits |
 | Thoughts | The first sentence of its recent reasoning and replies |
+| Agents | The session's subagents, named by the task each was given; finished ones are dimmed |
 | Context | Key ideas from `CLAUDE.md`, memory and rule files, plus available skills |
 
 - Every new step fires a pulse from the core to the matching item.
@@ -51,7 +52,7 @@ A replay covers the last 300 changes of a session, read from the end of its tran
 
 ## Which sessions are shown
 
-The most recently active sessions across all projects, eight by default. Transcripts that are not sessions of their own are left out: subagent runs, and files with no messages. A transcript with no prompt from you is shown only when there is room. `--list` prints what was found and why each one is shown or skipped.
+The most recently active sessions across all projects, eight by default. Transcripts that are not sessions of their own are left out: subagent runs (those appear on their session's Agents ring instead), and files with no messages. A transcript with no prompt from you is shown only when there is room. `--list` prints what was found and why each one is shown or skipped.
 
 Only sessions whose transcripts are written under `~/.claude/projects` on this machine can be shown: Claude Code in a terminal, an editor extension, or a local session in the desktop app's Code tab. A session that runs in the cloud, in a container or on another machine writes its transcript there, and is not visible here.
 
@@ -59,7 +60,7 @@ Only sessions whose transcripts are written under `~/.claude/projects` on this m
 
 Read-only, on your machine only (the page is served on `127.0.0.1`):
 
-- session transcripts under `~/.claude/projects`
+- session transcripts under `~/.claude/projects`, including each session's subagent transcripts
 - the names and first lines of each session's `CLAUDE.md`, rule, skill and memory files
 
 ## Develop

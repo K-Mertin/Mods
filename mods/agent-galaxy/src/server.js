@@ -42,7 +42,7 @@ const NO_PROMPT = 'Waiting for the first prompt';
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
   const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: NO_PROMPT,
-    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', title: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
+    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', title: '', context: [], hits: new Map(), subs: new Map(), subAt: 0, subSig: '', status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
 }
@@ -234,6 +234,9 @@ function promptText(raw, o) {
   let text = String(raw);
   // a compaction summary is written as a user message, but it is not something the user asked
   if ((o && o.isCompactSummary) || /^\s*This session is being continued from a previous conversation/i.test(text)) return '';
+  // a scheduled task's prompt is boilerplate around the task; its name says what it is
+  const sched = /^\s*<scheduled-task\b[^>]*\bname="([^"]+)"/.exec(text);
+  if (sched) return 'Scheduled task: ' + flat(sched[1]);
   const cmd = /<command-name>\s*(\/[^<\s]+)\s*<\/command-name>/.exec(text);
   if (cmd) {   // a slash command: show it as "/name args"; housekeeping commands are not a task
     const cmdArgs = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
@@ -248,7 +251,7 @@ function promptText(raw, o) {
 function handle(S, o, pulse) {
   // a session's title, used when no prompt can be read from it
   if (o && typeof o === 'object' && !o.message) {
-    const title = (o.type === 'summary' && o.summary) || (o.type === 'custom-title' && o.customTitle) || (o.type === 'ai-title' && o.aiTitle);
+    const title = (o.type === 'summary' && o.summary) || ((o.type === 'custom-title' || o.type === 'ai-title') && (o.customTitle || o.aiTitle || o.title));
     if (title && typeof title === 'string' && flat(title) !== S.title) { S.title = flat(title); S.dirty = true; }
   }
   if (!o || typeof o !== 'object' || !o.message) return;
@@ -266,7 +269,7 @@ function handle(S, o, pulse) {
       if (!b) return;
       if (b.type === 'tool_use' && b.name) {
         if (b.id) { S.toolOf.set(b.id, b.name); if (S.toolOf.size > 600) S.toolOf.delete(S.toolOf.keys().next().value); }
-        todoTool(S, b);
+        if (!o.isSidechain) todoTool(S, b);   // a subagent's own to-do list is not the session's
         const label = toolLabel(b.name);
         touch(S, 'Tools', b.name, n => n > 1 ? `${label} ×${n}` : label, n => `${label}, used ${n} time${n > 1 ? 's' : ''}`, pulse);
         const fp = b.input && (b.input.file_path || b.input.notebook_path);
@@ -298,16 +301,101 @@ function handle(S, o, pulse) {
 }
 
 function snapshot(S) {
-  return { id: S.id, project: S.project, core: S.core === NO_PROMPT && S.title ? clip(S.title, 120) : S.core, mtime: S.mtime, status: S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
+  return { id: S.id, project: S.project, core: S.core === NO_PROMPT && S.title ? clip(S.title, 120) : S.core,
+    mtime: Math.max(S.mtime, S.subAt), status: Date.now() - S.subAt < SUB_RUNNING_MS ? 'working' : S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
     todos: S.todos.slice(0, 40).map(t => ({ t: clip(t.state === 'doing' && t.active ? t.active : t.text, 60), s: t.state })),
     rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
-      detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([{ name: 'Context',
+      detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([agentsRing(S), { name: 'Context',
       items: S.context.map(i => { const uses = (i.file ? S.hits.get(i.file) || 0 : 0) + (i.skill ? S.hits.get('skill:' + i.skill) || 0 : 0);
         return { key: i.key, text: i.text, detail: i.base + (uses ? ` · used ${uses} time${uses > 1 ? 's' : ''} this session` : ' · available, not opened in this session'), n: uses + 1, idle: !uses }; }) }]) };
 }
 function send(obj) { const msg = 'data: ' + JSON.stringify(obj) + '\n\n'; for (const res of clients) res.write(msg); }
 const full = () => ({ build: BUILD, full: [...tracked.values()].sort((a, b) => b.mtime - a.mtime).map(snapshot) });
 function flush(S, extra) { send(Object.assign({ id: S.id, state: snapshot(S), pulses: S.pending }, extra)); S.pending = []; S.dirty = false; }
+
+/* ---------- subagents ---------- */
+// A session's subagents write their own transcripts to <project>/<session id>/subagents/agent-*.jsonl, and the
+// session's own transcript can sit untouched for days while they work. Their steps are fed into the session's
+// rings, and each subagent is an item on the Agents ring.
+const SUB_RUNNING_MS = 60000, SUB_SHOWN = 8;
+const subDir = S => path.join(path.dirname(S.file), S.id, 'subagents');
+function pollSubs(S, pulse) {
+  const dir = subDir(S); let files = [];
+  for (const e of entries(dir)) {
+    if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
+    try { const st = fs.statSync(path.join(dir, e.name)); files.push({ name: e.name, size: st.size, mtime: st.mtimeMs }); } catch (err) {}
+  }
+  if (!files.length && !S.subs.size) return;
+  files.sort((a, b) => b.mtime - a.mtime);
+  // first look: only the most recent ones, read from near their end; afterwards, anything new is read in full
+  if (!pulse) files = files.slice(0, SUB_SHOWN);
+  for (const f of files) {
+    let sub = S.subs.get(f.name);
+    if (!sub) {
+      if (pulse && S.subs.size && f.mtime < S.subAt - 86400000) continue;
+      sub = { name: f.name, pos: pulse ? 0 : Math.max(0, f.size - 512 * 1024), skip: !pulse && f.size > 512 * 1024, rest: Buffer.alloc(0), prompt: '', kind: '', steps: 0, last: '', mtime: 0, seen: ++S.seq };
+      S.subs.set(f.name, sub);
+      if (sub.pos > 0) sub.prompt = subPrompt(path.join(dir, f.name));
+    }
+    sub.mtime = f.mtime; if (f.mtime > S.subAt) S.subAt = f.mtime;
+    if (f.size < sub.pos) { sub.pos = 0; sub.rest = Buffer.alloc(0); }
+    if (f.size === sub.pos) continue;
+    let buf; try { buf = readRange(path.join(dir, f.name), sub.pos, f.size); } catch (err) { continue; }
+    sub.pos = f.size;
+    const data = sub.rest.length ? Buffer.concat([sub.rest, buf]) : buf, end = data.lastIndexOf(10);
+    if (end < 0) { sub.rest = data; continue; }
+    sub.rest = data.subarray(end + 1);
+    let text = data.subarray(0, end).toString('utf8');
+    if (sub.skip) { text = text.slice(text.indexOf('\n') + 1); sub.skip = false; }   // started mid-line
+    for (const ln of text.split('\n')) {
+      if (!ln.trim()) continue;
+      let o; try { o = JSON.parse(ln); } catch (err) { continue; }
+      if (!o || typeof o !== 'object' || !o.message) continue;
+      o.isSidechain = true;
+      const c = o.message.content;
+      if (o.type === 'user' && !sub.prompt) sub.prompt = clip(flat(typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : ''), 300);
+      if (o.type === 'assistant' && Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_use') { sub.steps++; const d = describe(b.name, b.input)[0]; if (d) sub.last = clip(d, 60); }
+      if (o.agentType || o.subagent_type) sub.kind = String(o.agentType || o.subagent_type);
+      handle(S, o, pulse);
+    }
+    S.dirty = true;
+    if (pulse) S.pending.push({ ring: 'Agents', key: sub.name });
+  }
+  const sig = agentsRing(S).items.map(i => i.key + (i.idle ? '-' : '+') + i.n).join(',');
+  if (sig !== S.subSig) { S.subSig = sig; S.dirty = true; }
+}
+function subPrompt(file) {   // the task a subagent was given: its first user message
+  for (const ln of headOf(file, 60000).split('\n')) {
+    let o; try { o = JSON.parse(ln); } catch (e) { continue; }
+    if (!o || o.type !== 'user' || !o.message) continue;
+    const c = o.message.content, t = flat(typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '');
+    if (t) return clip(t, 300);
+  }
+  return '';
+}
+function agentsRing(S) {
+  const now = Date.now(), shown = [...S.subs.values()].sort((a, b) => b.mtime - a.mtime).slice(0, SUB_SHOWN).sort((a, b) => a.seen - b.seen);
+  return { name: 'Agents', items: shown.map(a => {
+    const running = now - a.mtime < SUB_RUNNING_MS, label = a.prompt ? shorten(a.prompt) : (a.kind || 'subagent');
+    return { key: a.name, text: clip(label, 44), n: 1 + Math.min(8, Math.floor(a.steps / 4)), idle: !running,
+      detail: clip((a.kind ? a.kind + ' · ' : '') + (a.prompt || 'subagent'), 300) + ` · ${a.steps} step${a.steps === 1 ? '' : 's'}${a.last ? ', last: ' + a.last : ''} · ${running ? 'running' : 'finished'}` };
+  }) };
+}
+// Newest subagent activity per session file, refreshed now and then: it decides which sessions count as recent.
+const subMtime = new Map();
+function refreshSubMtimes() {
+  subMtime.clear();
+  let dirs; try { dirs = fs.readdirSync(ROOT, { withFileTypes: true }); } catch (e) { return; }
+  for (const d of dirs) {
+    if (!d.isDirectory() || (FILTER && !d.name.toLowerCase().includes(FILTER))) continue;
+    for (const e of entries(path.join(ROOT, d.name))) {
+      if (!e.isDirectory()) continue;
+      const sd = path.join(ROOT, d.name, e.name, 'subagents'); let newest = 0;
+      for (const f of entries(sd)) { if (!f.isFile()) continue; try { newest = Math.max(newest, fs.statSync(path.join(sd, f.name)).mtimeMs); } catch (err) {} }
+      if (newest) subMtime.set(path.join(ROOT, d.name, e.name + '.jsonl'), newest);
+    }
+  }
+}
 
 /* ---------- following the transcripts ---------- */
 // A project folder also holds transcripts that are not sessions of their own: subagent runs (every line is a
@@ -345,7 +433,7 @@ function candidates() {
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       const file = path.join(ROOT, d.name, f);
-      try { const st = fs.statSync(file); if (st.size > 0) out.push({ file, mtime: st.mtimeMs, size: st.size }); } catch (e) {}
+      try { const st = fs.statSync(file); if (st.size > 0) out.push({ file, mtime: Math.max(st.mtimeMs, subMtime.get(file) || 0), own: st.mtimeMs, size: st.size }); } catch (e) {}
     }
   }
   return out.sort((a, b) => b.mtime - a.mtime);
@@ -361,6 +449,7 @@ function recent() {
 }
 // --list: what the script sees under the projects folder, to explain what is and is not shown
 function listSessions() {
+  refreshSubMtimes();
   const all = candidates(), now = Date.now();
   const age = ms => { const m = Math.round((now - ms) / 60000); return m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
   console.log(`${all.length} transcript files under ${ROOT}${FILTER ? ' matching "' + FILTER + '"' : ''}.`);
@@ -374,7 +463,7 @@ function listSessions() {
   for (const c of all.slice(0, 40)) {
     const kind = kindOf(c.file, c.size), S = kind === 'session' ? load(c.file, c.mtime) : null;
     const mark = kind === 'session' && shown < MAX ? (shown++, 'SHOWN  ') : kind === 'session' ? 'over ' + MAX + ' ' : kind === 'unprompted' ? 'if room' : 'skipped';
-    console.log(`${mark}  ${kind.padEnd(10)}  ${age(c.mtime).padStart(6)} ago  ${String(Math.round(c.size / 1024)).padStart(6)} KB  ${(S ? S.project : path.basename(path.dirname(c.file))).slice(0, 22).padEnd(22)}  ${path.basename(c.file).slice(0, 13)}  ${S ? S.status.padEnd(7) + '  ' + clip(S.core, 50) : ''}`);
+    console.log(`${mark}  ${kind.padEnd(10)}  ${age(c.mtime).padStart(6)} ago  ${String(Math.round(c.size / 1024)).padStart(6)} KB  ${(S ? S.project : path.basename(path.dirname(c.file))).slice(0, 22).padEnd(22)}  ${path.basename(c.file).slice(0, 13)}  ${S ? S.status.padEnd(7) + '  ' + clip(S.core, 50) : ''}${c.mtime > c.own ? '  [subagents active ' + age(c.mtime) + ' ago]' : ''}`);
   }
 }
 
@@ -401,6 +490,7 @@ function load(file, mtime) {
     if (from > 0) buf = buf.subarray(buf.indexOf(10) + 1);
     feed(S, buf, false); S.pos = size;
   } catch (e) {}
+  pollSubs(S, false);
   scanContext(S); S.cwdChanged = false;
   S.pending = []; S.dirty = false;
   return S;
@@ -486,9 +576,11 @@ function start() {
     const url = `http://localhost:${PORT}`;
     console.log(`Agent Galaxy is running at ${url}`);
     console.log(`Watching ${ROOT}${FILTER ? ' (projects matching "' + FILTER + '")' : ''}`);
-    scan();
+    refreshSubMtimes(); scan();
     if (!tracked.size) console.log('No session transcripts found yet. Start Claude Code and this will pick it up.');
     setInterval(poll, 300); setInterval(scan, 2000);
+    setInterval(() => { for (const S of tracked.values()) { pollSubs(S, true); if (S.dirty) flush(S); } }, 1000);
+    setInterval(refreshSubMtimes, 10000);
     setInterval(() => { for (const S of tracked.values()) if (scanContext(S)) flush(S); }, 10000);
     setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 15000);
     if (!args.includes('--no-open')) {
@@ -523,4 +615,4 @@ function inspect(prefix) {
 
 // Run as a script, or load it from a test to use the parser on its own.
 if (require.main === module) { if (args.includes('--inspect')) inspect(String(opt('inspect', ''))); else if (args.includes('--list')) listSessions(); else start(); }
-else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, kindOf, promptText, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
+else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, kindOf, promptText, pollSubs, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };

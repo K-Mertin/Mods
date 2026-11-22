@@ -162,8 +162,42 @@ test('prompts wrapped in tags are still read; a title stands in when there is no
   assert.equal(G.promptText('<task>Check the positions</task>\n<rules>be brief</rules>'), 'Check the positions be brief');
   assert.equal(G.promptText('<local-command-stdout>ok</local-command-stdout>'), '');
   assert.equal(G.promptText('[Request interrupted by user]'), '');
+  assert.equal(G.promptText('<scheduled-task name="nightly-check" file="/x/y/SKILL.md">\nThis is an automated run of a scheduled task. The user is not present.\n</scheduled-task>'), 'Scheduled task: nightly-check');
   const S = session([line({ type: 'summary', summary: 'Daily portfolio check' }), asst([{ type: 'text', text: 'Done.' }])]);
   assert.equal(G.snapshot(S).core, 'Daily portfolio check');
   G.feedText(S, user('now sell'), true);
   assert.equal(G.snapshot(S).core, 'now sell');
+});
+
+test('subagents: their steps reach the session, and each is an item on the Agents ring', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-galaxy-'));
+  const proj = path.join(root, '-tmp-demo'), file = path.join(proj, 'abc.jsonl'), sdir = path.join(proj, 'abc', 'subagents');
+  fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(file, user('Tidy the header') + '\n');
+  const sub = path.join(sdir, 'agent-1.jsonl');
+  fs.writeFileSync(sub, [
+    user('Find every place the header height is set. Report file and line.'),
+    asst([{ type: 'tool_use', id: 's1', name: 'Grep', input: { pattern: 'header-height' } },
+          { type: 'tool_use', id: 's2', name: 'TodoWrite', input: { todos: [{ content: 'sub task', status: 'pending' }] } }]),
+    user([{ type: 'tool_result', tool_use_id: 's1', is_error: true, content: 'no matches' }])
+  ].join('\n') + '\n');
+  const S = G.makeSession(file, 0);
+  G.feedText(S, fs.readFileSync(file, 'utf8'), false);
+  G.pollSubs(S, false);
+  let snap = G.snapshot(S);
+  assert.equal(snap.core, 'Tidy the header');                       // the subagent's task does not replace the session's
+  assert.deepEqual(snap.todos, []);                                 // nor does its to-do list
+  assert.deepEqual(ring(snap, 'Tools').map(i => i.text), ['Grep', 'TodoWrite']);
+  assert.equal(ring(snap, 'Actions')[0].error, true);
+  const agent = ring(snap, 'Agents')[0];
+  assert.equal(agent.text, 'Find every place the header height is set');
+  assert.equal(agent.idle, false);
+  assert.match(agent.detail, /2 steps.*running/);
+  assert.equal(snap.status, 'working');                             // a running subagent means the session is working
+  fs.appendFileSync(sub, asst([{ type: 'tool_use', id: 's3', name: 'Read', input: { file_path: '/tmp/demo/header.css' } }]) + '\n');
+  G.pollSubs(S, true);
+  snap = G.snapshot(S);
+  assert.ok(S.pending.some(p => p.ring === 'Agents' && p.key === 'agent-1.jsonl'));
+  assert.deepEqual(ring(snap, 'Files').map(i => i.text), ['header.css']);
+  fs.rmSync(root, { recursive: true });
 });
