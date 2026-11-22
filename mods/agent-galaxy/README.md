@@ -18,6 +18,7 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 | `--sessions <n>` | How many recent sessions to show (default 8) |
 | `--port <n>` | Port to serve on (default 4777) |
 | `--no-open` | Do not open the browser |
+| `--list` | Print the transcripts found and which ones are shown, then exit |
 
 ## What you see
 
@@ -45,6 +46,10 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 A saved page contains what the galaxy showed: prompts, commands, file names, the agent's replies, and key ideas from `CLAUDE.md`, memory and rule files. Home folders are rewritten to `~`, so your user name is not in the paths, but nothing else is removed. Read it before you share it.
 
 A replay covers the last 300 changes of a session, read from the end of its transcript.
+
+## Which sessions are shown
+
+The most recently active sessions across all projects, eight by default. Transcripts that are not sessions of their own are left out: subagent runs, and files with no messages. A transcript with no prompt from you is shown only when there is room. `--list` prints what was found and why each one is shown or skipped.
 
 ## What it reads
 

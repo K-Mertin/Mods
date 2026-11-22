@@ -637,7 +637,7 @@
     ctx.fillStyle = rgba(dot, st === 'working' && clock - G.lastEvent < 4 ? 0.6 + 0.4 * Math.sin(clock * 8) : 0.9); ctx.beginPath(); ctx.arc(c.x - tw / 2 - 11, y, 3, 0, TAU); ctx.fill();
     ctx.font = '400 11px "IBM Plex Mono", ui-monospace, monospace';
     ctx.fillStyle = hot ? 'rgba(219,233,255,0.95)' : 'rgba(127,147,184,0.95)';
-    ctx.fillText((st === 'waiting' ? 'your turn · ' : st === 'quiet' ? 'quiet · ' : '') + clip(core, 40), c.x, y + 17);
+    ctx.fillText((st === 'waiting' ? 'your turn · ' : st === 'quiet' ? 'quiet · ' : '') + clip(core, G === hoverG ? 60 : 30), c.x, y + 17);
     if (hot && G.hit) {
       ctx.strokeStyle = rgba(CORE_RGB, 0.7); ctx.lineWidth = 1;
       for (let i = 0; i < 4; i++) { const a = clock * 0.5 + i * TAU / 4; ctx.beginPath(); ctx.arc(c.x, c.y, G.hit.r, a, a + 0.9); ctx.stroke(); }

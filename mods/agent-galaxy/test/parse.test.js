@@ -134,3 +134,25 @@ test('export: home folders are replaced and the page carries the recording safel
   assert.ok(html.includes('window.__REPLAY__ = {'));
   assert.equal(html.split('</script>').length, 3);   // the recording and the page script, nothing broken out early
 });
+
+test('prompts: a compaction summary is not the task; a slash command is shown by name', () => {
+  const S = session([user('Fix the header'), user('This session is being continued from a previous conversation that ran out of context. Summary: ...')]);
+  assert.equal(G.snapshot(S).core, 'Fix the header');
+  G.feedText(S, user('also this', { isCompactSummary: true }), true);
+  assert.equal(G.snapshot(S).core, 'Fix the header');
+  G.feedText(S, user('<command-message>review is running</command-message>\n<command-name>/review</command-name>\n<command-args>the open PR</command-args>'), true);
+  assert.equal(G.snapshot(S).core, '/review the open PR');
+  G.feedText(S, user('<command-name>/clear</command-name><command-args></command-args>'), true);
+  assert.equal(G.snapshot(S).core, '/review the open PR');
+});
+
+test('subagent and empty transcripts are told apart from sessions', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-galaxy-'));
+  const write = (name, lines) => { const f = path.join(dir, name); fs.writeFileSync(f, lines.join('\n') + '\n'); return [f, fs.statSync(f).size]; };
+  assert.equal(G.kindOf(...write('a.jsonl', [user('Do the thing'), asst([{ type: 'text', text: 'ok' }])])), 'session');
+  assert.equal(G.kindOf(...write('b.jsonl', [user('search for x', { isSidechain: true }), asst([{ type: 'text', text: 'found' }], {}, { isSidechain: true })])), 'subagent');
+  assert.equal(G.kindOf(...write('agent-123.jsonl', [user('search for y'), asst([{ type: 'text', text: 'found' }])])), 'subagent');
+  assert.equal(G.kindOf(...write('d.jsonl', [user('<local-command-stdout>hi</local-command-stdout>'), asst([{ type: 'text', text: 'ok' }])])), 'unprompted');
+  assert.equal(G.kindOf(...write('c.jsonl', [line({ type: 'summary', summary: 'x' }), line({ type: 'file-history-snapshot' })])), 'empty');
+  fs.rmSync(dir, { recursive: true });
+});

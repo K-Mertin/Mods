@@ -6,6 +6,7 @@
  *   node agent-galaxy.js --project api    only sessions whose project folder name contains "api"
  *   node agent-galaxy.js --sessions 12    how many recent sessions to show (default 8)
  *   node agent-galaxy.js --port 5000 --no-open
+ *   node agent-galaxy.js --list           print the transcripts it found and which ones it shows, then exit
  *
  * Reads the session transcripts Claude Code writes under ~/.claude/projects, plus the names and first lines of each
  * session's CLAUDE.md, rule, skill and memory files (all read-only),
@@ -35,9 +36,10 @@ const MAX = Math.max(1, Math.min(24, Number(opt('sessions', 8)) || 8));
 const tracked = new Map();   // transcript path -> session
 const clients = new Set();
 
+const NO_PROMPT = 'Waiting for the first prompt';
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
-  const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: 'Waiting for the first prompt',
+  const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: NO_PROMPT,
     rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
@@ -231,7 +233,14 @@ function handle(S, o, pulse) {
     if (o.isMeta || o.isSidechain) return;
     let text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
     text = flat(text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' '));
-    if (!text || /^(<|Caveat:|\[Request interrupted)/.test(text)) return;
+    // a compaction summary is written as a user message, but it is not something the user asked
+    if (o.isCompactSummary || /^This session is being continued from a previous conversation/i.test(text)) return;
+    const cmd = /<command-name>\s*(\/[^<\s]+)\s*<\/command-name>/.exec(text);
+    if (cmd) {   // a slash command: show it as "/name args"; housekeeping commands are not a task
+      const cmdArgs = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
+      text = flat(cmd[1] + ' ' + (cmdArgs ? cmdArgs[1] : ''));
+      if (/^\/(clear|exit|quit|help|status|config|model|compact|resume|login|logout|cost|doctor|plugin|mcp|memory|permissions)\b/.test(text)) return;
+    } else if (!text || /^(<|Caveat:|\[Request interrupted)/.test(text)) return;
     S.core = clip(text, 120); S.dirty = true; setStatus(S, 'working');
   } else if (o.type === 'assistant' && Array.isArray(c)) {
     c.forEach((b, i) => {
@@ -282,7 +291,33 @@ const full = () => ({ build: BUILD, full: [...tracked.values()].sort((a, b) => b
 function flush(S, extra) { send(Object.assign({ id: S.id, state: snapshot(S), pulses: S.pending }, extra)); S.pending = []; S.dirty = false; }
 
 /* ---------- following the transcripts ---------- */
-function recent() {
+// A project folder also holds transcripts that are not sessions of their own: subagent runs (every line is a
+// sidechain line, or the file is named agent-*) and files with no messages at all. Showing those as galaxies
+// crowds out the real sessions, so they are left out. A transcript with messages but no prompt from the user
+// ("unprompted") is only shown when there is room.
+const kinds = new Map();
+function kindOf(file, size) {
+  const c = kinds.get(file);
+  if (c && ((c.kind !== 'empty' && c.kind !== 'unprompted') || c.size === size)) return c.kind;
+  let kind = 'session';
+  try {
+    const n = Math.min(size, 262144);
+    let msgs = 0, side = 0; const T = makeSession(file, 0);
+    for (const ln of readRange(file, 0, n).toString('utf8').split('\n')) {
+      if (!ln.trim()) continue;
+      let o; try { o = JSON.parse(ln); } catch (e) { continue; }
+      if (!o || !o.message || (o.type !== 'user' && o.type !== 'assistant')) continue;
+      msgs++; if (o.isSidechain) side++;
+      handle(T, o, false);
+    }
+    if (path.basename(file).startsWith('agent-') || (msgs > 0 && side === msgs)) kind = 'subagent';
+    else if (msgs === 0 && n === size) kind = 'empty';
+    else if (T.core === NO_PROMPT && n === size) kind = 'unprompted';
+  } catch (e) {}
+  kinds.set(file, { kind, size });
+  return kind;
+}
+function candidates() {
   const out = []; let dirs;
   try { dirs = fs.readdirSync(ROOT, { withFileTypes: true }); } catch (e) { return out; }
   for (const d of dirs) {
@@ -291,11 +326,33 @@ function recent() {
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       const file = path.join(ROOT, d.name, f);
-      try { const s = fs.statSync(file); if (s.size > 0) out.push({ file, mtime: s.mtimeMs }); } catch (e) {}
+      try { const st = fs.statSync(file); if (st.size > 0) out.push({ file, mtime: st.mtimeMs, size: st.size }); } catch (e) {}
     }
   }
-  return out.sort((a, b) => b.mtime - a.mtime).slice(0, MAX);
+  return out.sort((a, b) => b.mtime - a.mtime);
 }
+function recent() {
+  const out = [], spare = [];
+  for (const c of candidates().slice(0, 200)) {
+    const kind = kindOf(c.file, c.size);
+    if (kind === 'session') out.push(c); else if (kind === 'unprompted') spare.push(c);
+    if (out.length >= MAX) break;
+  }
+  return out.concat(spare.slice(0, MAX - out.length)).sort((a, b) => b.mtime - a.mtime);
+}
+// --list: what the script sees under the projects folder, to explain what is and is not shown
+function listSessions() {
+  const all = candidates(), now = Date.now();
+  const age = ms => { const m = Math.round((now - ms) / 60000); return m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
+  console.log(`${all.length} transcript files under ${ROOT}${FILTER ? ' matching "' + FILTER + '"' : ''}; showing the 40 most recent.\n`);
+  let shown = 0;
+  for (const c of all.slice(0, 40)) {
+    const kind = kindOf(c.file, c.size), S = kind === 'session' ? load(c.file, c.mtime) : null;
+    const mark = kind === 'session' && shown < MAX ? (shown++, 'SHOWN  ') : kind === 'session' ? 'over ' + MAX + ' ' : kind === 'unprompted' ? 'if room' : 'skipped';
+    console.log(`${mark}  ${kind.padEnd(10)}  ${age(c.mtime).padStart(6)} ago  ${String(Math.round(c.size / 1024)).padStart(6)} KB  ${(S ? S.project : path.basename(path.dirname(c.file))).slice(0, 22).padEnd(22)}  ${path.basename(c.file).slice(0, 13)}  ${S ? S.status.padEnd(7) + '  ' + clip(S.core, 50) : ''}`);
+  }
+}
+
 function feed(S, buf, pulse) {
   const data = S.rest.length ? Buffer.concat([S.rest, buf]) : buf;
   const end = data.lastIndexOf(10);
@@ -417,5 +474,5 @@ function start() {
 }
 
 // Run as a script, or load it from a test to use the parser on its own.
-if (require.main === module) start();
-else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
+if (require.main === module) { if (args.includes('--list')) listSessions(); else start(); }
+else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, kindOf, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
