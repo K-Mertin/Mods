@@ -5,6 +5,8 @@
  *   node agent-galaxy.js                  show the most recently active sessions, one galaxy each
  *   node agent-galaxy.js --project api    only sessions whose project folder name contains "api"
  *   node agent-galaxy.js --sessions 12    how many recent sessions to show (default 8)
+ *   node agent-galaxy.js --days 30        how far back a session may have been active (default 7)
+ *   node agent-galaxy.js --all            also show old sessions and finished scheduled tasks
  *   node agent-galaxy.js --port 5000 --no-open
  *   node agent-galaxy.js --list           print the transcripts it found and which ones it shows, then exit
  *   node agent-galaxy.js --inspect 91daf1 show the shape of one transcript's first messages, then exit
@@ -34,6 +36,8 @@ const CONTEXT_CAP = 22;
 const IDEAS = { claude: [6, 8], memory: [3, 5], rule: [2, 4] };
 const TAIL_BYTES = 4 * 1024 * 1024;
 const MAX = Math.max(1, Math.min(24, Number(opt('sessions', 8)) || 8));
+const ALL = args.includes('--all');
+const DAYS = Math.max(0.05, Number(opt('days', 7)) || 7), WINDOW_MS = DAYS * 86400000, SCHEDULED_MS = 3600000;
 
 const tracked = new Map();   // transcript path -> session
 const clients = new Set();
@@ -255,7 +259,7 @@ function handle(S, o, pulse) {
     if (title && typeof title === 'string' && flat(title) !== S.title) { S.title = flat(title); S.dirty = true; }
   }
   if (!o || typeof o !== 'object' || !o.message) return;
-  if (o.cwd && String(o.cwd) !== S.cwd) { S.cwd = String(o.cwd); S.cwdChanged = true; const p = path.basename(S.cwd); if (p && p !== S.project) { S.project = p; S.dirty = true; } }
+  if (o.cwd && !S.cwd) { S.cwd = String(o.cwd); S.cwdChanged = true; const p = path.basename(S.cwd); if (p && p !== S.project) { S.project = p; S.dirty = true; } }
   const c = o.message.content, id = o.uuid || String(S.seq);
   if (o.type === 'user') {
     if (Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_result') { setStatus(S, 'working'); todoResult(S, b); if (b.is_error) markError(S, b.tool_use_id, pulse); }
@@ -263,6 +267,7 @@ function handle(S, o, pulse) {
     let text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
     text = promptText(text, o);
     if (!text) return;
+    if (S.core === NO_PROMPT && text.startsWith('Scheduled task: ')) S.scheduled = true;   // started by a schedule, not by a person
     S.core = clip(text, 120); S.dirty = true; setStatus(S, 'working');
   } else if (o.type === 'assistant' && Array.isArray(c)) {
     c.forEach((b, i) => {
@@ -302,7 +307,7 @@ function handle(S, o, pulse) {
 
 function snapshot(S) {
   return { id: S.id, project: S.project, core: S.core === NO_PROMPT && S.title ? clip(S.title, 120) : S.core,
-    mtime: Math.max(S.mtime, S.subAt), status: Date.now() - S.subAt < SUB_RUNNING_MS ? 'working' : S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
+    mtime: Math.max(S.mtime, S.subAt), status: Date.now() - S.subAt < SUB_RUNNING_MS ? 'working' : S.scheduled && S.status === 'waiting' ? 'done' : S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
     todos: S.todos.slice(0, 40).map(t => ({ t: clip(t.state === 'doing' && t.active ? t.active : t.text, 60), s: t.state })),
     rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
       detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([agentsRing(S), { name: 'Context',
@@ -419,6 +424,7 @@ function kindOf(file, size) {
     }
     if (path.basename(file).startsWith('agent-') || (msgs > 0 && side === msgs)) kind = 'subagent';
     else if (msgs === 0 && n === size) kind = 'empty';
+    else if (T.scheduled) kind = 'scheduled';
     else if (T.core === NO_PROMPT && n === size) kind = 'unprompted';
   } catch (e) {}
   kinds.set(file, { kind, size });
@@ -438,19 +444,31 @@ function candidates() {
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
-function recent() {
-  const out = [], spare = [];
-  for (const c of candidates().slice(0, 200)) {
-    const kind = kindOf(c.file, c.size);
-    if (kind === 'session') out.push(c); else if (kind === 'unprompted') spare.push(c);
-    if (out.length >= MAX) break;
+// Which transcripts become galaxies, and for the rest, why not.
+//   - a session active within the last --days days (default 7)
+//   - a scheduled-task session only while it is running, or within the hour after: finished automation is clutter
+//   - an unprompted transcript only when there is room
+//   - if that leaves nothing, the three most recent sessions whatever their age
+// --all drops the age and scheduled-task rules.
+function choose() {
+  const now = Date.now(), all = candidates().slice(0, 300), why = new Map(), out = [], spare = [], old = [];
+  for (const c of all) {
+    const kind = kindOf(c.file, c.size); c.kind = kind;
+    if (kind === 'subagent' || kind === 'empty') { why.set(c.file, 'skipped'); continue; }
+    if (kind === 'unprompted') { spare.push(c); continue; }
+    if (!ALL && kind === 'scheduled' && now - c.mtime > SCHEDULED_MS) { why.set(c.file, 'finished'); continue; }
+    if (!ALL && now - c.mtime > WINDOW_MS) { why.set(c.file, 'too old'); old.push(c); continue; }
+    if (out.length < MAX) out.push(c); else why.set(c.file, 'over ' + MAX);
   }
-  return out.concat(spare.slice(0, MAX - out.length)).sort((a, b) => b.mtime - a.mtime);
+  if (!out.length) for (const c of old.filter(x => x.kind === 'session').slice(0, 3)) { out.push(c); why.delete(c.file); }
+  for (const c of spare) { if (out.length < MAX) out.push(c); else why.set(c.file, 'no room'); }
+  return { all, why, shown: out.sort((x, y) => y.mtime - x.mtime) };
 }
+const recent = () => choose().shown;
 // --list: what the script sees under the projects folder, to explain what is and is not shown
 function listSessions() {
   refreshSubMtimes();
-  const all = candidates(), now = Date.now();
+  const picked = choose(), all = picked.all, now = Date.now();
   const age = ms => { const m = Math.round((now - ms) / 60000); return m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
   console.log(`${all.length} transcript files under ${ROOT}${FILTER ? ' matching "' + FILTER + '"' : ''}.`);
   const by = new Map();
@@ -458,12 +476,12 @@ function listSessions() {
   console.log('\nProject folders, most recently active first:');
   for (const [d, p] of [...by].sort((x, y) => y[1].newest - x[1].newest).slice(0, 30)) console.log(`  ${age(p.newest).padStart(6)} ago  ${String(p.n).padStart(4)} files  ${d}`);
   if (all.length && now - all[0].mtime > 3600000) console.log(`\nNothing here has changed in the last hour. Sessions running right now are being written somewhere else (see README, "Which sessions are shown").`);
+  console.log(`\nShown: sessions active in the last ${DAYS} days, at most ${MAX}; scheduled tasks only within an hour of running.${ALL ? ' (--all: no age or scheduled-task limit)' : ' Use --days N, --sessions N or --all to change that.'}`);
   console.log('\nThe 40 most recent transcripts:\n');
-  let shown = 0;
   for (const c of all.slice(0, 40)) {
-    const kind = kindOf(c.file, c.size), S = kind === 'session' ? load(c.file, c.mtime) : null;
-    const mark = kind === 'session' && shown < MAX ? (shown++, 'SHOWN  ') : kind === 'session' ? 'over ' + MAX + ' ' : kind === 'unprompted' ? 'if room' : 'skipped';
-    console.log(`${mark}  ${kind.padEnd(10)}  ${age(c.mtime).padStart(6)} ago  ${String(Math.round(c.size / 1024)).padStart(6)} KB  ${(S ? S.project : path.basename(path.dirname(c.file))).slice(0, 22).padEnd(22)}  ${path.basename(c.file).slice(0, 13)}  ${S ? S.status.padEnd(7) + '  ' + clip(S.core, 50) : ''}${c.mtime > c.own ? '  [subagents active ' + age(c.mtime) + ' ago]' : ''}`);
+    const kind = c.kind, S = kind === 'session' || kind === 'scheduled' ? load(c.file, c.mtime) : null;
+    const mark = (picked.why.get(c.file) || 'SHOWN').padEnd(8);
+    console.log(`${mark}  ${kind.padEnd(10)}  ${age(c.mtime).padStart(6)} ago  ${String(Math.round(c.size / 1024)).padStart(6)} KB  ${(S ? S.project : path.basename(path.dirname(c.file))).slice(0, 22).padEnd(22)}  ${path.basename(c.file).slice(0, 13)}  ${S ? snapshot(S).status.padEnd(7) + '  ' + clip(S.core, 50) : ''}${c.mtime > c.own ? '  [subagents active ' + age(c.mtime) + ' ago]' : ''}`);
   }
 }
 

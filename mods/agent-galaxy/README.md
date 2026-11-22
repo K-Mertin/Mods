@@ -16,6 +16,8 @@ It opens `http://localhost:4777`. Needs Node; no other dependencies.
 | --- | --- |
 | `--project <name>` | Only sessions whose project folder name contains `<name>` |
 | `--sessions <n>` | How many recent sessions to show (default 8) |
+| `--days <n>` | How far back a session may have been active (default 7) |
+| `--all` | Also show old sessions and finished scheduled tasks |
 | `--port <n>` | Port to serve on (default 4777) |
 | `--no-open` | Do not open the browser |
 | `--list` | Print the transcripts found and which ones are shown, then exit |
@@ -52,7 +54,7 @@ A replay covers the last 300 changes of a session, read from the end of its tran
 
 ## Which sessions are shown
 
-The most recently active sessions across all projects, eight by default. Transcripts that are not sessions of their own are left out: subagent runs (those appear on their session's Agents ring instead), and files with no messages. A transcript with no prompt from you is shown only when there is room. `--list` prints what was found and why each one is shown or skipped.
+Sessions active in the last seven days across all projects, the eight most recent. A session started by a scheduled task is shown only while it runs and for an hour after. If nothing qualifies, the three most recent sessions are shown. Transcripts that are not sessions of their own are left out: subagent runs (those appear on their session's Agents ring instead), and files with no messages. A transcript with no prompt from you is shown only when there is room. `--list` prints what was found and why each one is shown or skipped.
 
 Only sessions whose transcripts are written under `~/.claude/projects` on this machine can be shown: Claude Code in a terminal, an editor extension, or a local session in the desktop app's Code tab. A session that runs in the cloud, in a container or on another machine writes its transcript there, and is not visible here.
 

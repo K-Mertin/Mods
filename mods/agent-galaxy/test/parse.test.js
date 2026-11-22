@@ -201,3 +201,19 @@ test('subagents: their steps reach the session, and each is an item on the Agent
   assert.deepEqual(ring(snap, 'Files').map(i => i.text), ['header.css']);
   fs.rmSync(root, { recursive: true });
 });
+
+test('a scheduled task that has ended is finished, not waiting for anyone; the project is where the session started', () => {
+  const S = session([
+    user('<scheduled-task name="nightly-check" file="/x/SKILL.md">This is an automated run.</scheduled-task>', { cwd: '/tmp/stock' }),
+    asst([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cd reports/longterm && ls' } }], {}, { cwd: '/tmp/stock/reports/longterm' }),
+    asst([{ type: 'text', text: 'Nothing to report.' }], { stop_reason: 'end_turn' })
+  ]);
+  const snap = G.snapshot(S);
+  assert.equal(snap.core, 'Scheduled task: nightly-check');
+  assert.equal(snap.status, 'done');
+  assert.equal(snap.project, 'stock');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-galaxy-')), f = path.join(dir, 's.jsonl');
+  fs.writeFileSync(f, user('<scheduled-task name="nightly-check" file="/x">run</scheduled-task>') + '\n');
+  assert.equal(G.kindOf(f, fs.statSync(f).size), 'scheduled');
+  fs.rmSync(dir, { recursive: true });
+});

@@ -184,9 +184,11 @@
     quiet: { rgb: [196, 176, 150], text: '#efe6d8', dark: ['rgba(26,20,14,0.94)', 'rgba(18,14,10,0.84)', 'rgba(18,14,10,0)'], label: 'QUIET', gain: 0.5,
       halo: glowSprite([170, 140, 110], 256, false), warm: glowSprite([200, 180, 150], 128, true), rays: raySprite([196, 176, 150], [150, 120, 100]) }
   };
+  LOOKS.done = Object.assign({}, LOOKS.quiet, { label: 'FINISHED' });   // a scheduled task that has ended: nobody's turn
   function stateOf(g) {
     if (!live || g.replaying) return g.status || 'working';
     const idle = Date.now() - (g.mtime || Date.now());
+    if (g.status === 'done') return idle > 2500 ? 'done' : 'working';
     if (g.status === 'waiting') return idle > 2500 ? 'waiting' : 'working';   // a reply is often followed at once by a tool call
     return idle > 60000 ? 'quiet' : 'working';
   }
@@ -626,9 +628,27 @@
   }
 
   // name plate under a galaxy that is too far away to read
+  function caption(g, n) {
+    const st = g.state, word = st === 'waiting' ? 'your turn · ' : st === 'quiet' ? 'quiet · ' : st === 'done' ? 'finished · ' : '';
+    return word + clip(g.core.replace(/^Scheduled task: /, 'task '), n);
+  }
+  // In the view of all sessions, name plates that would overlap are pushed down, nearest galaxy first.
+  function placeLabels() {
+    const list = galaxies.filter(g => g.visible).sort((a, b) => a.c.y - b.c.y), placed = [];
+    for (const g of list) {
+      const w = Math.max((g.project || 'session').length * 9.5 + 60, caption(g, 36).length * 6.8) + 16;
+      let y = g.c.y + Math.max(30, 310 * g.c.s) + 14;
+      for (let pass = 0; pass < 6; pass++) {
+        const hit = placed.find(p => Math.abs(p.x - g.c.x) < (p.w + w) / 2 && Math.abs(p.y - y) < 40);
+        if (!hit) break;
+        y = hit.y + 40;
+      }
+      g.labelY = y; placed.push({ x: g.c.x, y, w });
+    }
+  }
   function drawTitle() {
-    const c = G.c, hot = G === hoverG, y = c.y + Math.max(30, 310 * c.s) + 14;
-    const st = G.state, dot = st === 'waiting' ? LOOKS.waiting.rgb : st === 'quiet' ? [150, 150, 150] : CORE_RGB;
+    const c = G.c, hot = G === hoverG, y = G.labelY || c.y + Math.max(30, 310 * c.s) + 14;
+    const st = G.state, dot = st === 'waiting' ? LOOKS.waiting.rgb : st === 'quiet' || st === 'done' ? [150, 150, 150] : CORE_RGB;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = '600 13px "Chakra Petch", "Trebuchet MS", sans-serif';
     const name = (G.project || 'session').toUpperCase() + (G.todos.length ? `  ${G.todos.filter(t => t.s === 'done').length}/${G.todos.length}` : ''), tw = ctx.measureText(name).width;
@@ -637,7 +657,7 @@
     ctx.fillStyle = rgba(dot, st === 'working' && clock - G.lastEvent < 4 ? 0.6 + 0.4 * Math.sin(clock * 8) : 0.9); ctx.beginPath(); ctx.arc(c.x - tw / 2 - 11, y, 3, 0, TAU); ctx.fill();
     ctx.font = '400 11px "IBM Plex Mono", ui-monospace, monospace';
     ctx.fillStyle = hot ? 'rgba(219,233,255,0.95)' : 'rgba(127,147,184,0.95)';
-    ctx.fillText((st === 'waiting' ? 'your turn · ' : st === 'quiet' ? 'quiet · ' : '') + clip(core, G === hoverG ? 60 : 30), c.x, y + 17);
+    ctx.fillText(caption(G, hot ? 64 : 36), c.x, y + 17);
     if (hot && G.hit) {
       ctx.strokeStyle = rgba(CORE_RGB, 0.7); ctx.lineWidth = 1;
       for (let i = 0; i < 4; i++) { const a = clock * 0.5 + i * TAU / 4; ctx.beginPath(); ctx.arc(c.x, c.y, G.hit.r, a, a + 0.9); ctx.stroke(); }
@@ -712,7 +732,7 @@
     if (galaxies.length > 1) row('All sessions', `Show all ${galaxies.length} galaxies at once`, false, view === 'all', () => { setView('all'); closeMenu(); });
     if (menu.children.length) menu.append(document.createElement('hr'));
     for (const g of galaxies.slice().sort((a, b) => (b.mtime - a.mtime) || (a.slot - b.slot))) {
-      const st = stateOf(g), a = st === 'waiting' ? 'your turn' : st === 'working' ? 'working now' : age(g) || 'quiet';
+      const st = stateOf(g), a = st === 'waiting' ? 'your turn' : st === 'working' ? 'working now' : st === 'done' ? 'finished' + (age(g) ? ', ' + age(g) : '') : age(g) || 'quiet';
       row(g.project || 'session', clip(g.core, 72) + ' · ' + a, st === 'waiting' ? 'turn' : st === 'working', g === focus && view === 'single', () => { setFocus(g, true); closeMenu(); });
     }
     menuDirty = false; menuAt = clock;
@@ -876,7 +896,7 @@
       for (const g of galaxies) for (let i = 0; i < 3; i++) tgt[i] += g.pos[i] / galaxies.length;
       let maxR = 0;
       for (const g of galaxies) maxR = Math.max(maxR, Math.hypot(g.pos[0] - tgt[0], g.pos[1] - tgt[1], g.pos[2] - tgt[2]));
-      tD = 2.4 * (maxR + 700);
+      tD = 2.0 * (maxR + 700);
     }
     const k = Math.min(1, dt * 2.6);
     for (let i = 0; i < 3; i++) camT[i] += (tgt[i] - camT[i]) * k;
@@ -884,11 +904,12 @@
 
     stepReplay(dt);
     for (const g of galaxies) prepare(g);
+    placeLabels();
     for (const g of galaxies) { use(g); step(dt); save(); }
 
     if (focus && view === 'single' && idleShown !== focus.state && (focus.state !== 'working' ? clock - lastNote > 1.5 : live && connected && clock - lastNote > 6)) {
       const st = focus.state;
-      statusText(st === 'waiting' ? 'your turn: the agent has finished and is waiting for you' : st === 'quiet' ? 'quiet: no activity for over a minute' : 'working');
+      statusText(st === 'waiting' ? 'your turn: the agent has finished and is waiting for you' : st === 'done' ? 'finished: this scheduled task has ended' : st === 'quiet' ? 'quiet: no activity for over a minute' : 'working');
       idleShown = st;
     }
     if (!menu.hidden && (menuDirty || clock - menuAt > 2)) renderMenu();
