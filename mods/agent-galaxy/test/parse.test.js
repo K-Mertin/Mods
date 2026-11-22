@@ -111,7 +111,7 @@ test('replay: one frame per change, in order, ending at the live state', () => {
   const file = path.join(dir, 's.jsonl');
   fs.writeFileSync(file, [
     user('Ship it', { cwd: '/tmp/demo-api', timestamp: '2026-01-02T03:04:05Z' }),
-    line({ type: 'summary', summary: 'ignored' }),
+    line({ type: 'file-history-snapshot', snapshot: {} }),
     asst([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test', description: 'Run the tests' } }], {}, { timestamp: '2026-01-02T03:04:09Z' }),
     user([{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'failed' }], { timestamp: '2026-01-02T03:04:20Z' })
   ].join('\n') + '\n');
@@ -155,4 +155,15 @@ test('subagent and empty transcripts are told apart from sessions', () => {
   assert.equal(G.kindOf(...write('d.jsonl', [user('<local-command-stdout>hi</local-command-stdout>'), asst([{ type: 'text', text: 'ok' }])])), 'unprompted');
   assert.equal(G.kindOf(...write('c.jsonl', [line({ type: 'summary', summary: 'x' }), line({ type: 'file-history-snapshot' })])), 'empty');
   fs.rmSync(dir, { recursive: true });
+});
+
+test('prompts wrapped in tags are still read; a title stands in when there is no prompt', () => {
+  assert.equal(G.promptText('<ide_opened_file>The user opened a.ts</ide_opened_file> fix the header'), 'fix the header');
+  assert.equal(G.promptText('<task>Check the positions</task>\n<rules>be brief</rules>'), 'Check the positions be brief');
+  assert.equal(G.promptText('<local-command-stdout>ok</local-command-stdout>'), '');
+  assert.equal(G.promptText('[Request interrupted by user]'), '');
+  const S = session([line({ type: 'summary', summary: 'Daily portfolio check' }), asst([{ type: 'text', text: 'Done.' }])]);
+  assert.equal(G.snapshot(S).core, 'Daily portfolio check');
+  G.feedText(S, user('now sell'), true);
+  assert.equal(G.snapshot(S).core, 'now sell');
 });

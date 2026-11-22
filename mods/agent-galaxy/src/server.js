@@ -7,6 +7,8 @@
  *   node agent-galaxy.js --sessions 12    how many recent sessions to show (default 8)
  *   node agent-galaxy.js --port 5000 --no-open
  *   node agent-galaxy.js --list           print the transcripts it found and which ones it shows, then exit
+ *   node agent-galaxy.js --inspect 91daf1 show the shape of one transcript's first messages, then exit
+ *   node agent-galaxy.js --root <dir>     read project folders from <dir> instead of ~/.claude/projects
  *
  * Reads the session transcripts Claude Code writes under ~/.claude/projects, plus the names and first lines of each
  * session's CLAUDE.md, rule, skill and memory files (all read-only),
@@ -21,7 +23,7 @@ const opt = (name, def) => { const i = args.indexOf('--' + name); return i < 0 ?
 const PORT = Number(opt('port', 4777));
 const FILTER = String(opt('project', '') === true ? '' : opt('project', '')).toLowerCase();
 const CONFIG = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-const ROOT = path.join(CONFIG, 'projects');
+const ROOT = typeof opt('root', '') === 'string' && opt('root', '') ? path.resolve(String(opt('root', ''))) : path.join(CONFIG, 'projects');
 const PAGE = __PAGE__;
 const BUILD = require('crypto').createHash('sha1').update(PAGE).digest('hex').slice(0, 10);   // lets an open page notice a newer script
 
@@ -40,7 +42,7 @@ const NO_PROMPT = 'Waiting for the first prompt';
 function makeSession(file, mtime) {
   const dir = path.basename(path.dirname(file));
   const S = { file, id: path.basename(file, '.jsonl'), project: dir.split('-').filter(Boolean).pop() || dir, core: NO_PROMPT,
-    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
+    rings: {}, pos: 0, rest: Buffer.alloc(0), mtime, seq: 0, pending: [], dirty: false, cwd: '', title: '', context: [], hits: new Map(), status: 'working', toolOf: new Map(), todos: [], taskSeq: 0, ctx: 0, out: 0, outBy: new Map(), model: '' };
   for (const r of RINGS) S.rings[r] = new Map();
   return S;
 }
@@ -224,7 +226,31 @@ function markError(S, id, pulse) {
 }
 function setStatus(S, status) { if (S.status !== status) { S.status = status; S.dirty = true; } }
 
+// What the user actually asked, from a user message's text; '' when the message is not a request.
+// Editors and the CLI wrap extra material in tags around (or instead of) the prompt.
+const NOISE_TAGS = 'system-reminder|ide_opened_file|ide_selection|ide_diagnostics|local-command-stdout|local-command-stderr|local-command-caveat|command-message|command-stdout|command-stderr|bash-input|bash-stdout|bash-stderr|user-prompt-submit-hook|task-notification';
+const NOISE_RE = new RegExp('<(' + NOISE_TAGS + ')\\b[^>]*>[\\s\\S]*?</\\1>', 'g');
+function promptText(raw, o) {
+  let text = String(raw);
+  // a compaction summary is written as a user message, but it is not something the user asked
+  if ((o && o.isCompactSummary) || /^\s*This session is being continued from a previous conversation/i.test(text)) return '';
+  const cmd = /<command-name>\s*(\/[^<\s]+)\s*<\/command-name>/.exec(text);
+  if (cmd) {   // a slash command: show it as "/name args"; housekeeping commands are not a task
+    const cmdArgs = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
+    text = flat(cmd[1] + ' ' + (cmdArgs ? cmdArgs[1] : ''));
+    return /^\/(clear|exit|quit|help|status|config|model|compact|resume|login|logout|cost|doctor|plugin|mcp|memory|permissions)\b/.test(text) ? '' : text;
+  }
+  text = flat(text.replace(NOISE_RE, ' '));
+  if (text.startsWith('<')) text = flat(text.replace(/<\/?[A-Za-z][\w:.-]*(\s[^<>]*)?>/g, ' '));   // a prompt written inside tags of its own
+  return /^(Caveat:|\[Request interrupted)/.test(text) ? '' : text;
+}
+
 function handle(S, o, pulse) {
+  // a session's title, used when no prompt can be read from it
+  if (o && typeof o === 'object' && !o.message) {
+    const title = (o.type === 'summary' && o.summary) || (o.type === 'custom-title' && o.customTitle) || (o.type === 'ai-title' && o.aiTitle);
+    if (title && typeof title === 'string' && flat(title) !== S.title) { S.title = flat(title); S.dirty = true; }
+  }
   if (!o || typeof o !== 'object' || !o.message) return;
   if (o.cwd && String(o.cwd) !== S.cwd) { S.cwd = String(o.cwd); S.cwdChanged = true; const p = path.basename(S.cwd); if (p && p !== S.project) { S.project = p; S.dirty = true; } }
   const c = o.message.content, id = o.uuid || String(S.seq);
@@ -232,15 +258,8 @@ function handle(S, o, pulse) {
     if (Array.isArray(c)) for (const b of c) if (b && b.type === 'tool_result') { setStatus(S, 'working'); todoResult(S, b); if (b.is_error) markError(S, b.tool_use_id, pulse); }
     if (o.isMeta || o.isSidechain) return;
     let text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
-    text = flat(text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' '));
-    // a compaction summary is written as a user message, but it is not something the user asked
-    if (o.isCompactSummary || /^This session is being continued from a previous conversation/i.test(text)) return;
-    const cmd = /<command-name>\s*(\/[^<\s]+)\s*<\/command-name>/.exec(text);
-    if (cmd) {   // a slash command: show it as "/name args"; housekeeping commands are not a task
-      const cmdArgs = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
-      text = flat(cmd[1] + ' ' + (cmdArgs ? cmdArgs[1] : ''));
-      if (/^\/(clear|exit|quit|help|status|config|model|compact|resume|login|logout|cost|doctor|plugin|mcp|memory|permissions)\b/.test(text)) return;
-    } else if (!text || /^(<|Caveat:|\[Request interrupted)/.test(text)) return;
+    text = promptText(text, o);
+    if (!text) return;
     S.core = clip(text, 120); S.dirty = true; setStatus(S, 'working');
   } else if (o.type === 'assistant' && Array.isArray(c)) {
     c.forEach((b, i) => {
@@ -279,7 +298,7 @@ function handle(S, o, pulse) {
 }
 
 function snapshot(S) {
-  return { id: S.id, project: S.project, core: S.core, mtime: S.mtime, status: S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
+  return { id: S.id, project: S.project, core: S.core === NO_PROMPT && S.title ? clip(S.title, 120) : S.core, mtime: S.mtime, status: S.status, usage: { ctx: S.ctx, out: S.out, model: S.model },
     todos: S.todos.slice(0, 40).map(t => ({ t: clip(t.state === 'doing' && t.active ? t.active : t.text, 60), s: t.state })),
     rings: RINGS.map(name => ({ name, items: [...S.rings[name].values()].map(({ key, text, detail, n, error, fails }) => ({ key, text, n, error: !!error,
       detail: detail + (error ? ' · failed or declined' : '') + (fails ? ` · ${fails} failed or declined` : '') })) })).concat([{ name: 'Context',
@@ -344,7 +363,13 @@ function recent() {
 function listSessions() {
   const all = candidates(), now = Date.now();
   const age = ms => { const m = Math.round((now - ms) / 60000); return m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
-  console.log(`${all.length} transcript files under ${ROOT}${FILTER ? ' matching "' + FILTER + '"' : ''}; showing the 40 most recent.\n`);
+  console.log(`${all.length} transcript files under ${ROOT}${FILTER ? ' matching "' + FILTER + '"' : ''}.`);
+  const by = new Map();
+  for (const c of all) { const d = path.basename(path.dirname(c.file)), p = by.get(d) || { n: 0, newest: 0 }; p.n++; p.newest = Math.max(p.newest, c.mtime); by.set(d, p); }
+  console.log('\nProject folders, most recently active first:');
+  for (const [d, p] of [...by].sort((x, y) => y[1].newest - x[1].newest).slice(0, 30)) console.log(`  ${age(p.newest).padStart(6)} ago  ${String(p.n).padStart(4)} files  ${d}`);
+  if (all.length && now - all[0].mtime > 3600000) console.log(`\nNothing here has changed in the last hour. Sessions running right now are being written somewhere else (see README, "Which sessions are shown").`);
+  console.log('\nThe 40 most recent transcripts:\n');
   let shown = 0;
   for (const c of all.slice(0, 40)) {
     const kind = kindOf(c.file, c.size), S = kind === 'session' ? load(c.file, c.mtime) : null;
@@ -473,6 +498,29 @@ function start() {
   });
 }
 
+// --inspect <start of a session id>: the shape of a transcript's first messages, to see why no prompt was read
+function inspect(prefix) {
+  const c = candidates().find(x => path.basename(x.file).startsWith(prefix));
+  if (!c) return console.log('No transcript whose name starts with "' + prefix + '" under ' + ROOT);
+  console.log(c.file + '\n');
+  const text = readRange(c.file, 0, Math.min(c.size, 2 * 1024 * 1024)).toString('utf8'), types = new Map();
+  let shown = 0;
+  for (const ln of text.split('\n')) {
+    if (!ln.trim()) continue;
+    let o; try { o = JSON.parse(ln); } catch (e) { continue; }
+    types.set(o.type, (types.get(o.type) || 0) + 1);
+    if (o.type !== 'user' || !o.message || shown >= 8) continue;
+    const ct = o.message.content, kinds = typeof ct === 'string' ? 'string' : Array.isArray(ct) ? ct.map(b => b && b.type).join('+') : typeof ct;
+    if (/tool_result/.test(kinds)) continue;
+    const raw = typeof ct === 'string' ? ct : Array.isArray(ct) ? ct.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
+    shown++;
+    console.log(`user message ${shown}: content=${kinds} isMeta=${!!o.isMeta} isSidechain=${!!o.isSidechain} keys=${Object.keys(o).filter(k => k !== 'message').join(',')}`);
+    console.log('  starts: ' + JSON.stringify(flat(raw).slice(0, 100)));
+    console.log('  read as: ' + JSON.stringify(o.isMeta || o.isSidechain ? '' : clip(promptText(raw, o), 80)) + '\n');
+  }
+  console.log('line types in the first 2 MB: ' + [...types].map(([k, v]) => k + '×' + v).join(', '));
+}
+
 // Run as a script, or load it from a test to use the parser on its own.
-if (require.main === module) { if (args.includes('--list')) listSessions(); else start(); }
-else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, kindOf, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
+if (require.main === module) { if (args.includes('--inspect')) inspect(String(opt('inspect', ''))); else if (args.includes('--list')) listSessions(); else start(); }
+else module.exports = { makeSession, snapshot, scanContext, keyIdeas, shorten, buildReplay, redact, exportPage, kindOf, promptText, feedText: (S, text, pulse) => feed(S, Buffer.from(text.endsWith('\n') ? text : text + '\n'), pulse) };
